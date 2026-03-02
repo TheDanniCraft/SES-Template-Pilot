@@ -1,0 +1,138 @@
+const encoder = new TextEncoder();
+const decoder = new TextDecoder();
+
+const ALGO = "AES-GCM";
+const SESSION_VERSION = 1;
+
+type SessionPayload = {
+  v: number;
+  p: string;
+  exp: number;
+};
+
+function getCryptoKeyMaterial() {
+  const secret =
+    process.env.COOKIE_SECRET ??
+    (process.env.NODE_ENV !== "production"
+      ? "dev-cookie-secret-change-this"
+      : undefined);
+
+  if (!secret) {
+    throw new Error("COOKIE_SECRET is not set");
+  }
+  return encoder.encode(secret);
+}
+
+async function getKey() {
+  const keyMaterial = getCryptoKeyMaterial();
+  const digest = await crypto.subtle.digest("SHA-256", keyMaterial);
+  return crypto.subtle.importKey("raw", digest, ALGO, false, [
+    "encrypt",
+    "decrypt"
+  ]);
+}
+
+function bytesToBase64(bytes: Uint8Array) {
+  if (typeof Buffer !== "undefined") {
+    return Buffer.from(bytes).toString("base64url");
+  }
+  let binary = "";
+  bytes.forEach((byte) => {
+    binary += String.fromCharCode(byte);
+  });
+  return btoa(binary);
+}
+
+function base64ToBytes(value: string) {
+  if (typeof Buffer !== "undefined") {
+    return new Uint8Array(Buffer.from(value, "base64url"));
+  }
+  const binary = atob(value);
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index += 1) {
+    bytes[index] = binary.charCodeAt(index);
+  }
+  return bytes;
+}
+
+export async function encryptAuthCookie(plainText: string) {
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const key = await getKey();
+  const encrypted = await crypto.subtle.encrypt(
+    { name: ALGO, iv },
+    key,
+    encoder.encode(plainText)
+  );
+  return `${bytesToBase64(iv)}.${bytesToBase64(new Uint8Array(encrypted))}`;
+}
+
+export async function decryptAuthCookie(value: string) {
+  try {
+    const [ivPart, cipherPart] = value.split(".");
+    if (!ivPart || !cipherPart) {
+      return null;
+    }
+    const iv = base64ToBytes(ivPart);
+    const cipher = base64ToBytes(cipherPart);
+    const key = await getKey();
+    const decrypted = await crypto.subtle.decrypt(
+      { name: ALGO, iv },
+      key,
+      cipher
+    );
+    return decoder.decode(decrypted);
+  } catch {
+    return null;
+  }
+}
+
+async function sha256Base64Url(value: string) {
+  const digest = await crypto.subtle.digest("SHA-256", encoder.encode(value));
+  return bytesToBase64(new Uint8Array(digest));
+}
+
+export async function createSessionCookie(
+  appPassword: string,
+  maxAgeSeconds = 60 * 60 * 24 * 7
+) {
+  const payload: SessionPayload = {
+    v: SESSION_VERSION,
+    p: await sha256Base64Url(appPassword),
+    exp: Date.now() + maxAgeSeconds * 1000
+  };
+
+  return encryptAuthCookie(JSON.stringify(payload));
+}
+
+export async function validateSessionCookie(
+  cookieValue: string,
+  appPassword: string
+) {
+  const decrypted = await decryptAuthCookie(cookieValue);
+  if (!decrypted) {
+    return false;
+  }
+
+  // Backward compatibility for old cookies that stored password directly.
+  if (decrypted === appPassword) {
+    return true;
+  }
+
+  try {
+    const parsed = JSON.parse(decrypted) as SessionPayload;
+    if (!parsed || parsed.v !== SESSION_VERSION) {
+      return false;
+    }
+    if (typeof parsed.exp !== "number" || parsed.exp <= Date.now()) {
+      return false;
+    }
+    if (typeof parsed.p !== "string" || !parsed.p) {
+      return false;
+    }
+
+    const expectedHash = await sha256Base64Url(appPassword);
+    return parsed.p === expectedHash;
+  } catch {
+    return false;
+  }
+}
