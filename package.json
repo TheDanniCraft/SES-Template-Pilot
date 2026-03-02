@@ -30,6 +30,7 @@
     "grapesjs": "^0.22.14",
     "lucide-react": "^0.575.0",
     "next": "^16.1.6",
+    "nodemailer": "^8.0.1",
     "papaparse": "^5.5.3",
     "postgres": "^3.4.8",
     "react": "^19.2.4",
@@ -42,6 +43,7 @@
   },
   "devDependencies": {
     "@types/node": "^25.3.3",
+    "@types/nodemailer": "^7.0.11",
     "@types/papaparse": "^5.5.2",
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",

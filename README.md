@@ -1,46 +1,88 @@
-# SES Template Pilot
+<div id="top" align="center">
 
-![SES Template Pilot](https://socialify.git.ci/TheDanniCraft/ses-template-pilot/image?forks=1&issues=1&language=1&logo=https%3A%2F%2Favatars.githubusercontent.com%2Fu%2F66677362&name=1&owner=1&pattern=Solid&pulls=1&stargazers=1&theme=Auto)
+<img src="./assets/readme/banner.svg" alt="SES Template Pilot Banner" width="100%">
 
-<p align="center">
-  <img src="https://img.shields.io/badge/Next.js-16-black?style=for-the-badge&logo=nextdotjs" alt="Next.js">
-  <img src="https://img.shields.io/badge/React-19-20232a?style=for-the-badge&logo=react" alt="React">
-  <img src="https://img.shields.io/badge/TypeScript-5-3178c6?style=for-the-badge&logo=typescript&logoColor=white" alt="TypeScript">
-  <img src="https://img.shields.io/badge/HeroUI-2.x-00ACC1?style=for-the-badge" alt="HeroUI">
-  <img src="https://img.shields.io/badge/TailwindCSS-4-38bdf8?style=for-the-badge&logo=tailwindcss&logoColor=white" alt="Tailwind CSS">
-  <img src="https://img.shields.io/badge/Drizzle-ORM-c5f74f?style=for-the-badge" alt="Drizzle ORM">
-  <img src="https://img.shields.io/badge/PostgreSQL-15+-336791?style=for-the-badge&logo=postgresql&logoColor=white" alt="PostgreSQL">
-  <img src="https://img.shields.io/badge/AWS-SES-FF9900?style=for-the-badge&logo=amazonaws&logoColor=white" alt="AWS SES">
-  <img src="https://img.shields.io/badge/license-MIT-22c55e?style=for-the-badge" alt="MIT">
-</p>
+<em>Design, sync, and send SES campaigns with local draft control and live deliverability insights.</em>
 
-Secure, local-first campaign operations UI for Amazon SES.  
-Design templates, sync with SES, manage recipients, send campaigns, and monitor delivery metrics.
+<br><br>
 
-## Highlights
+<a href="https://sespilot.app"><strong>sespilot.app</strong></a>
 
-- Visual email builder (table-first) plus raw HTML mode.
-- Plain text editor with optional auto-generate from HTML.
-- Local draft storage in PostgreSQL with SES sync.
-- Brand kits and contact books.
-- Bulk send with per-recipient template variables JSON.
-- Dashboard with SES quota and CloudWatch deliverability stats.
-- Paginated send logs for campaign auditing.
+<br><br>
 
-## Tech Stack
+<img src="https://img.shields.io/badge/Next.js-16-black?style=for-the-badge&logo=nextdotjs" alt="Next.js">
+<img src="https://img.shields.io/badge/React-19-20232a?style=for-the-badge&logo=react" alt="React">
+<img src="https://img.shields.io/badge/TypeScript-5-3178c6?style=for-the-badge&logo=typescript&logoColor=white" alt="TypeScript">
+<img src="https://img.shields.io/badge/HeroUI-2.x-00ACC1?style=for-the-badge" alt="HeroUI">
+<img src="https://img.shields.io/badge/TailwindCSS-4-38bdf8?style=for-the-badge&logo=tailwindcss&logoColor=white" alt="Tailwind CSS">
+<img src="https://img.shields.io/badge/Drizzle-ORM-c5f74f?style=for-the-badge" alt="Drizzle ORM">
+<img src="https://img.shields.io/badge/PostgreSQL-15+-336791?style=for-the-badge&logo=postgresql&logoColor=white" alt="PostgreSQL">
+<img src="https://img.shields.io/badge/AWS-SES-FF9900?style=for-the-badge&logo=amazonaws&logoColor=white" alt="AWS SES">
+<img src="https://img.shields.io/badge/license-MIT-22c55e?style=for-the-badge" alt="MIT">
 
-- Next.js 16 App Router
-- React 19 + TypeScript
-- HeroUI + Tailwind CSS v4
-- Drizzle ORM + PostgreSQL
-- AWS SDK v3 (`SES`, `CloudWatch`)
+</div>
+
+<img src="./assets/readme/divider.svg" alt="divider" width="100%">
+
+## Quick Links
+
+- [Live App](https://sespilot.app)
+- [Overview](#overview)
+- [Features](#features)
+- [Quick Start](#quick-start)
+- [Environment](#environment)
+- [Routes](#routes)
+- [Scripts](#scripts)
+- [Troubleshooting](#troubleshooting)
+
+<img src="./assets/readme/divider.svg" alt="divider" width="100%">
+
+## Overview
+
+SES Template Pilot is a secure, local-first operations UI for Amazon SES.
+
+It combines:
+
+- magic-link authentication
+- visual email editing
+- SES template sync
+- campaign sending
+- contact books
+- brand kits
+- per-user SES credentials
+- dashboard metrics + send logs
+
+Everything is built around practical campaign workflows with an editable draft layer in PostgreSQL.
+
+## Features
+
+- **Template Studio**
+  - table-first drag-and-drop builder
+  - raw HTML editor
+  - plain text mode (manual or auto from HTML)
+- **Auth + Tenancy**
+  - magic-link login only
+  - per-user sessions and isolated data
+- **SES Sync**
+  - list/get/create/update/delete SES templates
+  - reset local drafts from SES
+- **Campaign Send**
+  - recipients from tags, CSV upload, or contact books
+  - per-recipient `Template Variables JSON`
+- **Brand Kits**
+  - reusable color/branding defaults + logo URL
+- **Ops Dashboard**
+  - SES send quota/rate
+  - CloudWatch deliverability metrics + charts
+- **Audit Trail**
+  - paginated sent-email logs with status and errors
 
 ## Quick Start
 
 1. Install dependencies.
 
 ```bash
-npm install
+bun install
 ```
 
 2. Copy env file.
@@ -49,44 +91,51 @@ npm install
 cp .env.example .env
 ```
 
-3. Start PostgreSQL (Docker).
+3. Start database.
 
 ```bash
 docker compose up -d db
 ```
 
-4. Push schema.
+4. Apply schema.
 
 ```bash
-npm run db:push
+bun run db:push
 ```
 
-5. Start app.
+5. Run app.
 
 ```bash
-npm run dev
+bun run dev
 ```
 
 6. Open `http://localhost:3000`.
+7. Request a magic link on `/login`.
 
 ## Environment
 
 ```env
 NODE_ENV=development
-APP_PASSWORD=password
 COOKIE_SECRET=change-me-to-a-long-random-value
+DB_SECRET_KEY=base64-encoded-32-byte-key
 DATABASE_URL=postgres://postgres:postgres@localhost:5433/ses_ui
-AWS_REGION=us-east-1
-AWS_ACCESS_KEY_ID=your-access-key
-AWS_SECRET_ACCESS_KEY=your-secret-key
-SES_SOURCE_EMAIL=no-reply@example.com
+APP_BASE_URL=http://localhost:3000
+AUTH_MAGIC_LINK_FROM=no-reply@example.com
+SMTP_HOST=
+SMTP_PORT=587
+SMTP_SECURE=false
+SMTP_USER=
+SMTP_PASS=
+SMTP_FROM_EMAIL=no-reply@example.com
 ```
 
-- `APP_PASSWORD`: login password for the app.
-- `COOKIE_SECRET`: required for session cookie signing.
-- `SES_SOURCE_EMAIL`: sender address used for SES sends.
+- `COOKIE_SECRET`: required for auth cookie signing
+- `DB_SECRET_KEY`: AES-256 key (base64 32 bytes) for encrypted SES credentials in DB
+- `SMTP_*`: SMTP transport for magic-link delivery
+- `AUTH_MAGIC_LINK_FROM`: sender used for magic-link emails (falls back to `SMTP_FROM_EMAIL`)
+- SES send/template/metrics credentials are configured per user in `/settings`
 
-## Docker (App + DB)
+## Docker
 
 ```bash
 docker compose up -d
@@ -97,45 +146,57 @@ docker compose up -d
 
 ## AWS Permissions
 
-Required for full functionality:
+For full functionality:
 
-- SES template actions and send actions.
-- `ses:GetSendQuota`.
-- `cloudwatch:GetMetricData` for deliverability charts.
+- SES template + send permissions
+- `ses:GetSendQuota`
+- `cloudwatch:GetMetricData` (dashboard deliverability)
 
 ## Routes
 
-- `/login` - login
-- `/` - dashboard
-- `/templates` - template list
-- `/templates/new` - new draft
-- `/templates/[id]` - edit draft or SES template
-- `/send` - campaign builder + preview + send
-- `/logs` - sent logs
-- `/brand-kits` - brand kit manager
-- `/contact-books` - contact book manager
+- `/login` - login page
+- `/` - public landing page
+- `/app` - dashboard
+- `/app/templates` - template list
+- `/app/templates/new` - create template draft
+- `/app/templates/[id]` - edit draft or SES template
+- `/app/send` - build/send campaigns
+- `/app/logs` - send logs
+- `/app/brand-kits` - brand kit manager
+- `/app/contact-books` - contact book manager
+- `/app/settings` - per-user SES credentials
 
 ## Scripts
 
 | Script | Description |
 | --- | --- |
-| `npm run dev` | Start dev server |
-| `npm run build` | Build app |
-| `npm run start` | Start production server |
-| `npm run lint` | Run ESLint |
-| `npm run db:push` | Push schema to DB |
-| `npm run db:generate` | Generate migrations |
-| `npm run db:migrate` | Apply migrations |
-| `npm run db:studio` | Open Drizzle Studio |
+| `bun run dev` | Start dev server |
+| `bun run build` | Build app |
+| `bun run start` | Start production server |
+| `bun run lint` | Run ESLint |
+| `bun run db:push` | Push schema to DB |
+| `bun run db:generate` | Generate migrations |
+| `bun run db:migrate` | Run migrations |
+| `bun run db:studio` | Open Drizzle Studio |
 
 ## Troubleshooting
 
-- `DATABASE_URL is not set`: set it in `.env`.
-- `COOKIE_SECRET is not set`: set `COOKIE_SECRET` in `.env`.
-- Postgres `28P01` auth error: verify DB credentials in `DATABASE_URL`.
-- CloudWatch metrics unavailable: add `cloudwatch:GetMetricData` permission.
-- SES send fails: verify AWS creds, region, sender identity, and template name.
+- `DATABASE_URL is not set`: add it to `.env`.
+- `COOKIE_SECRET is not set`: add `COOKIE_SECRET` to `.env`.
+- Magic link email fails: set `SMTP_HOST/PORT/USER/PASS` and `AUTH_MAGIC_LINK_FROM`.
+- Postgres auth error `28P01`: verify DB user/password in `DATABASE_URL`.
+- Deliverability metrics unavailable: ensure `cloudwatch:GetMetricData` is allowed.
+- SES send failures: open `/settings` and verify per-user SES credentials + source email.
+- Campaign send failures: check per-user SES credentials and source email in `/app/settings`.
+
+<img src="./assets/readme/divider.svg" alt="divider" width="100%">
 
 ## License
 
 MIT
+
+<div align="center">
+
+[Back to top](#top)
+
+</div>
