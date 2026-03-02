@@ -1,11 +1,12 @@
 "use server";
 
 import { cookies } from "next/headers";
-import { createSessionCookie } from "@/lib/auth-cookie";
-import { getAppPassword } from "@/lib/app-password";
+import { createMagicLinkForEmail, revokeSessionFromCookie } from "@/lib/auth-service";
+import { createRandomToken } from "@/lib/auth-tokens";
+import { resolveAppBaseUrl, sendMagicLinkEmail } from "@/lib/magic-link-mail";
 import { loginSchema, type LoginInput } from "@/lib/validators";
 
-export async function loginAction(input: LoginInput) {
+export async function requestMagicLinkAction(input: LoginInput) {
   const parsed = loginSchema.safeParse(input);
   if (!parsed.success) {
     return {
@@ -14,35 +15,50 @@ export async function loginAction(input: LoginInput) {
     };
   }
 
-  const configuredPassword = getAppPassword();
-  if (!configuredPassword) {
-    return {
-      success: false,
-      error: "APP_PASSWORD is not configured"
-    };
-  }
-
-  if (parsed.data.password !== configuredPassword) {
-    return {
-      success: false,
-      error: "Invalid password"
-    };
-  }
-
-  const value = await createSessionCookie(configuredPassword);
+  const email = parsed.data.email.trim().toLowerCase();
+  const appBaseUrl = resolveAppBaseUrl();
+  const nonce = createRandomToken(18);
   const cookieStore = await cookies();
-  cookieStore.set("session_auth", value, {
+  cookieStore.set("magic_link_nonce", nonce, {
     httpOnly: true,
     secure: process.env.NODE_ENV === "production",
     sameSite: "lax",
-    path: "/",
-    maxAge: 60 * 60 * 24 * 7
+    path: "/login/verify",
+    maxAge: 60 * 15
   });
 
-  return { success: true };
+  let magicLinkResult: Awaited<ReturnType<typeof createMagicLinkForEmail>>;
+  try {
+    magicLinkResult = await createMagicLinkForEmail(email, appBaseUrl, nonce);
+  } catch (error) {
+    return {
+      success: false,
+      error:
+        error instanceof Error ? error.message : "Failed to create magic link"
+    };
+  }
+
+  const emailResult = await sendMagicLinkEmail({
+    email,
+    magicLink: magicLinkResult.magicLink
+  });
+
+  if (!emailResult.success) {
+    return {
+      success: false,
+      error: emailResult.error ?? "Failed to send magic link"
+    };
+  }
+
+  return {
+    success: true,
+    previewUrl: emailResult.delivered ? null : emailResult.previewUrl ?? null
+  };
 }
 
 export async function logoutAction() {
   const cookieStore = await cookies();
+  const existingCookie = cookieStore.get("session_auth")?.value;
+  await revokeSessionFromCookie(existingCookie);
   cookieStore.delete("session_auth");
 }

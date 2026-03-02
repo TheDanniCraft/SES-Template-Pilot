@@ -6,7 +6,7 @@ const SESSION_VERSION = 1;
 
 type SessionPayload = {
   v: number;
-  p: string;
+  s: string;
   exp: number;
 };
 
@@ -86,53 +86,39 @@ export async function decryptAuthCookie(value: string) {
   }
 }
 
-async function sha256Base64Url(value: string) {
-  const digest = await crypto.subtle.digest("SHA-256", encoder.encode(value));
-  return bytesToBase64(new Uint8Array(digest));
-}
-
 export async function createSessionCookie(
-  appPassword: string,
+  sessionToken: string,
   maxAgeSeconds = 60 * 60 * 24 * 7
 ) {
   const payload: SessionPayload = {
     v: SESSION_VERSION,
-    p: await sha256Base64Url(appPassword),
+    s: sessionToken,
     exp: Date.now() + maxAgeSeconds * 1000
   };
 
   return encryptAuthCookie(JSON.stringify(payload));
 }
 
-export async function validateSessionCookie(
-  cookieValue: string,
-  appPassword: string
-) {
+export async function parseSessionCookie(cookieValue: string) {
   const decrypted = await decryptAuthCookie(cookieValue);
   if (!decrypted) {
-    return false;
-  }
-
-  // Backward compatibility for old cookies that stored password directly.
-  if (decrypted === appPassword) {
-    return true;
+    return null;
   }
 
   try {
     const parsed = JSON.parse(decrypted) as SessionPayload;
     if (!parsed || parsed.v !== SESSION_VERSION) {
-      return false;
+      return null;
     }
     if (typeof parsed.exp !== "number" || parsed.exp <= Date.now()) {
-      return false;
+      return null;
     }
-    if (typeof parsed.p !== "string" || !parsed.p) {
-      return false;
+    if (typeof parsed.s !== "string" || !parsed.s) {
+      return null;
     }
 
-    const expectedHash = await sha256Base64Url(appPassword);
-    return parsed.p === expectedHash;
+    return parsed;
   } catch {
-    return false;
+    return null;
   }
 }

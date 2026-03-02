@@ -1,9 +1,22 @@
 import { LoginForm } from "@/components/login-form";
-import { getAppPassword } from "@/lib/app-password";
+import { redirect } from "next/navigation";
+import { getServerSessionUser } from "@/lib/server-auth";
 
-export default function LoginPage() {
-  const devPasswordHint =
-    process.env.NODE_ENV !== "production" ? getAppPassword() : null;
+type LoginPageProps = {
+  searchParams: Promise<{
+    error?: string;
+  }>;
+};
+
+export default async function LoginPage({ searchParams }: LoginPageProps) {
+  const user = await getServerSessionUser();
+  if (user) {
+    redirect("/app");
+  }
+
+  const params = await searchParams;
+  const loginError =
+    params.error === "invalid_or_expired" ? "invalid_or_expired" : null;
 
   return (
     <main className="flex min-h-screen items-center justify-center p-6">
@@ -17,7 +30,7 @@ export default function LoginPage() {
           </h1>
         </div>
         <div className="flex justify-center">
-          <LoginForm devPasswordHint={devPasswordHint} />
+          <LoginForm loginError={loginError} />
         </div>
       </div>
     </main>
