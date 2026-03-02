@@ -1,11 +1,12 @@
-import { count, eq } from "drizzle-orm";
+import { randomUUID } from "node:crypto";
+import { and, count, eq } from "drizzle-orm";
 import type { BrandKit } from "@/lib/brand-kits";
 import { db } from "@/lib/db";
-import { nowSql, brandKits } from "@/lib/schema";
+import { attachBrandKitId, extractBrandKitId } from "@/lib/ses-template-json";
+import { nowSql, brandKits, templateDrafts } from "@/lib/schema";
 
-const DEFAULT_BRAND_KITS: BrandKit[] = [
+const DEFAULT_BRAND_KITS: Array<Omit<BrandKit, "id">> = [
   {
-    id: "clipify",
     name: "Clipify",
     iconUrl: "https://storage.cloud.thedannicraft.de/assets/Clipify.png",
     colors: {
@@ -19,6 +20,12 @@ const DEFAULT_BRAND_KITS: BrandKit[] = [
     }
   }
 ];
+
+function isUuid(value: string) {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+    value
+  );
+}
 
 function sanitizeHex(value: string, fallback: string) {
   const normalized = (value || "").trim();
@@ -37,9 +44,8 @@ function sanitizeHex(value: string, fallback: string) {
   return fallback;
 }
 
-function sanitizeBrandKit(input: BrandKit): BrandKit {
+function sanitizeBrandKitFields(input: Omit<BrandKit, "id">): Omit<BrandKit, "id"> {
   return {
-    id: input.id.trim().toLowerCase(),
     name: input.name.trim(),
     iconUrl: input.iconUrl.trim(),
     colors: {
@@ -54,10 +60,81 @@ function sanitizeBrandKit(input: BrandKit): BrandKit {
   };
 }
 
-async function ensureSeedBrandKits() {
+function sanitizeBrandKit(input: BrandKit): BrandKit {
+  return {
+    id: input.id.trim().toLowerCase(),
+    ...sanitizeBrandKitFields(input)
+  };
+}
+
+async function migrateLegacyBrandKitIds(userId: string) {
+  await db.transaction(async (tx) => {
+    const kitRows = await tx
+      .select()
+      .from(brandKits)
+      .where(eq(brandKits.userId, userId));
+
+    const legacyRows = kitRows.filter((row) => !isUuid(row.id));
+    if (legacyRows.length === 0) {
+      return;
+    }
+
+    const migratedIds = new Map<string, string>();
+    for (const row of legacyRows) {
+      const nextId = randomUUID();
+      migratedIds.set(row.id, nextId);
+      await tx
+        .update(brandKits)
+        .set({
+          id: nextId,
+          updatedAt: nowSql
+        })
+        .where(and(eq(brandKits.userId, userId), eq(brandKits.id, row.id)));
+    }
+
+    const draftRows = await tx
+      .select({
+        id: templateDrafts.id,
+        designJson: templateDrafts.designJson
+      })
+      .from(templateDrafts)
+      .where(eq(templateDrafts.userId, userId));
+
+    for (const draft of draftRows) {
+      if (
+        !draft.designJson ||
+        typeof draft.designJson !== "object" ||
+        Array.isArray(draft.designJson)
+      ) {
+        continue;
+      }
+
+      const currentKitId = extractBrandKitId(draft.designJson);
+      if (!currentKitId) {
+        continue;
+      }
+
+      const migratedKitId = migratedIds.get(currentKitId);
+      if (!migratedKitId) {
+        continue;
+      }
+
+      await tx
+        .update(templateDrafts)
+        .set({
+          designJson: attachBrandKitId(draft.designJson, migratedKitId),
+          updatedAt: nowSql
+        })
+        .where(and(eq(templateDrafts.userId, userId), eq(templateDrafts.id, draft.id)));
+    }
+  });
+}
+
+async function ensureSeedBrandKits(userId: string) {
   const [existing] = await db
     .select({ value: count() })
-    .from(brandKits);
+    .from(brandKits)
+    .where(eq(brandKits.userId, userId));
 
   if ((existing?.value ?? 0) > 0) {
     return;
@@ -67,24 +144,29 @@ async function ensureSeedBrandKits() {
     .insert(brandKits)
     .values(
       DEFAULT_BRAND_KITS.map((kit) => {
-        const normalized = sanitizeBrandKit(kit);
+        const normalized = sanitizeBrandKitFields(kit);
         return {
-          id: normalized.id,
+          userId,
+          id: randomUUID(),
           name: normalized.name,
           iconUrl: normalized.iconUrl,
           colors: normalized.colors
         };
       })
     )
-    .onConflictDoNothing();
+    .onConflictDoNothing({
+      target: [brandKits.userId, brandKits.id]
+    });
 }
 
-export async function listBrandKits() {
-  await ensureSeedBrandKits();
+export async function listBrandKits(userId: string) {
+  await ensureSeedBrandKits(userId);
+  await migrateLegacyBrandKitIds(userId);
 
   const rows = await db
     .select()
     .from(brandKits)
+    .where(eq(brandKits.userId, userId))
     .orderBy(brandKits.name);
 
   return rows.map((row) =>
@@ -97,19 +179,20 @@ export async function listBrandKits() {
   );
 }
 
-export async function upsertBrandKit(kit: BrandKit) {
+export async function upsertBrandKit(userId: string, kit: BrandKit) {
   const normalized = sanitizeBrandKit(kit);
 
   await db
     .insert(brandKits)
     .values({
+      userId,
       id: normalized.id,
       name: normalized.name,
       iconUrl: normalized.iconUrl,
       colors: normalized.colors
     })
     .onConflictDoUpdate({
-      target: brandKits.id,
+      target: [brandKits.userId, brandKits.id],
       set: {
         name: normalized.name,
         iconUrl: normalized.iconUrl,
@@ -119,7 +202,7 @@ export async function upsertBrandKit(kit: BrandKit) {
     });
 }
 
-export async function deleteBrandKitById(id: string) {
+export async function deleteBrandKitById(userId: string, id: string) {
   const target = id.trim().toLowerCase();
   if (!target) {
     return;
@@ -127,11 +210,14 @@ export async function deleteBrandKitById(id: string) {
 
   const [existing] = await db
     .select({ value: count() })
-    .from(brandKits);
+    .from(brandKits)
+    .where(eq(brandKits.userId, userId));
 
   if ((existing?.value ?? 0) <= 1) {
     return;
   }
 
-  await db.delete(brandKits).where(eq(brandKits.id, target));
+  await db
+    .delete(brandKits)
+    .where(and(eq(brandKits.userId, userId), eq(brandKits.id, target)));
 }

@@ -1,12 +1,13 @@
 "use client";
 
-import { useState, useTransition } from "react";
+import { useCallback, useState, useTransition } from "react";
 import { Button, Card, CardBody, CardHeader, Input } from "@heroui/react";
 import { Plus, Save, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { deleteContactBookAction, saveContactBookAction } from "@/lib/actions/contact-books";
 import type { ContactBook } from "@/lib/contact-books";
 import { isValidContactEmail, normalizeRecipients } from "@/lib/contact-books";
+import { useSaveShortcut } from "@/hooks/use-save-shortcut";
 import { TagsInput } from "@/components/tags-input";
 
 type ContactBooksManagerProps = {
@@ -14,23 +15,56 @@ type ContactBooksManagerProps = {
 };
 
 type ContactBookDraft = {
+  localId: string;
   id: string;
+  previousId: string | null;
   name: string;
   recipients: string[];
 };
 
+function createLocalId() {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return crypto.randomUUID();
+  }
+  if (typeof crypto !== "undefined" && typeof crypto.getRandomValues === "function") {
+    const bytes = new Uint8Array(16);
+    crypto.getRandomValues(bytes);
+    bytes[6] = (bytes[6] & 0x0f) | 0x40;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    const hex = Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
+    return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20, 32)}`;
+  }
+  return "00000000-0000-4000-8000-000000000000";
+}
+
+function createContactBookId() {
+  return createLocalId();
+}
+
+function isUuid(value: string) {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+    value
+  );
+}
+
 function toDraft(book: ContactBook): ContactBookDraft {
+  const normalizedId = book.id.trim().toLowerCase();
+  const keepId = isUuid(normalizedId);
+
   return {
-    id: book.id,
+    localId: createLocalId(),
+    id: keepId ? normalizedId : createContactBookId(),
+    previousId: keepId ? null : normalizedId,
     name: book.name,
     recipients: book.recipients
   };
 }
 
 function createEmptyBook(): ContactBookDraft {
-  const id = `book-${Date.now()}`;
   return {
-    id,
+    localId: createLocalId(),
+    id: createContactBookId(),
+    previousId: null,
     name: "New Contact Book",
     recipients: []
   };
@@ -46,7 +80,7 @@ export function ContactBooksManager({ initialBooks }: ContactBooksManagerProps) 
     setBooks((current) => current.map((book, i) => (i === index ? next : book)));
   };
 
-  const onSave = (book: ContactBookDraft) => {
+  const onSave = useCallback((book: ContactBookDraft) => {
     const recipients = normalizeRecipients(book.recipients);
     if (recipients.length === 0) {
       toast.error("Add at least one valid recipient email");
@@ -56,6 +90,7 @@ export function ContactBooksManager({ initialBooks }: ContactBooksManagerProps) 
     startTransition(async () => {
       const result = await saveContactBookAction({
         id: book.id.trim().toLowerCase(),
+        previousId: book.previousId,
         name: book.name,
         recipients
       });
@@ -68,13 +103,13 @@ export function ContactBooksManager({ initialBooks }: ContactBooksManagerProps) 
       toast.success(`Saved contact book "${book.name}"`);
       setBooks((current) =>
         current.map((item) =>
-          item.id === book.id
-            ? { ...item, recipients }
+          item.localId === book.localId
+            ? { ...item, previousId: null, recipients }
             : item
         )
       );
     });
-  };
+  }, [startTransition]);
 
   const onDelete = (book: ContactBookDraft) => {
     startTransition(async () => {
@@ -84,10 +119,32 @@ export function ContactBooksManager({ initialBooks }: ContactBooksManagerProps) 
         return;
       }
 
-      setBooks((current) => current.filter((item) => item.id !== book.id));
+      setBooks((current) => current.filter((item) => item.localId !== book.localId));
       toast.success(`Deleted "${book.name}"`);
     });
   };
+
+  const onSaveShortcut = useCallback(() => {
+    const activeElement = document.activeElement as HTMLElement | null;
+    const localId =
+      activeElement
+        ?.closest<HTMLElement>("[data-contact-book-local-id]")
+        ?.getAttribute("data-contact-book-local-id") ?? null;
+
+    const targetBook = localId
+      ? books.find((book) => book.localId === localId)
+      : books.length === 1
+        ? books[0]
+        : null;
+
+    if (!targetBook) {
+      return;
+    }
+
+    onSave(targetBook);
+  }, [books, onSave]);
+
+  useSaveShortcut(onSaveShortcut, !isPending && books.length > 0);
 
   return (
     <div className="space-y-4">
@@ -120,19 +177,13 @@ export function ContactBooksManager({ initialBooks }: ContactBooksManagerProps) 
 
       {books.map((book, index) => {
         return (
-          <Card key={`${book.id}-${index}`} className="panel rounded-2xl">
+          <Card
+            key={book.localId}
+            className="panel rounded-2xl"
+            data-contact-book-local-id={book.localId}
+          >
             <CardBody className="space-y-4">
-              <div className="grid gap-3 md:grid-cols-2">
-                <Input
-                  label="ID"
-                  value={book.id}
-                  onValueChange={(value) =>
-                    updateBook(index, {
-                      ...book,
-                      id: value.trim().toLowerCase()
-                    })
-                  }
-                />
+              <div className="grid gap-3">
                 <Input
                   label="Name"
                   value={book.name}

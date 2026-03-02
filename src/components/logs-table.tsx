@@ -46,7 +46,7 @@ function statusColor(status: string): "success" | "danger" | "warning" | "defaul
 }
 
 function buildLogsPageHref(page: number) {
-  return page <= 1 ? "/logs" : `/logs?page=${page}`;
+  return page <= 1 ? "/app/logs" : `/app/logs?page=${page}`;
 }
 
 export function LogsTable({

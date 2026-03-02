@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState, useTransition } from "react";
+import { useCallback, useEffect, useRef, useState, useTransition } from "react";
 import { createPortal } from "react-dom";
 import {
   Button,
@@ -16,9 +16,14 @@ import {
   saveBrandKitAction
 } from "@/lib/actions/brand-kits";
 import type { BrandKit } from "@/lib/brand-kits";
+import { useSaveShortcut } from "@/hooks/use-save-shortcut";
 
 type BrandKitsManagerProps = {
   initialKits: BrandKit[];
+};
+
+type BrandKitDraft = BrandKit & {
+  localId: string;
 };
 
 const PRESET_COLORS = [
@@ -135,6 +140,28 @@ function hslToHex(h: number, s: number, l: number) {
       .toString(16)
       .padStart(2, "0");
   return `#${toHex(r)}${toHex(g)}${toHex(b)}`;
+}
+
+function createLocalId() {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return crypto.randomUUID();
+  }
+  if (typeof crypto !== "undefined" && typeof crypto.getRandomValues === "function") {
+    const bytes = new Uint8Array(16);
+    crypto.getRandomValues(bytes);
+    bytes[6] = (bytes[6] & 0x0f) | 0x40;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    const hex = Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
+    return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20, 32)}`;
+  }
+  return "00000000-0000-4000-8000-000000000000";
+}
+
+function toDraft(kit: BrandKit): BrandKitDraft {
+  return {
+    ...kit,
+    localId: createLocalId()
+  };
 }
 
 type BrandColorFieldProps = {
@@ -340,9 +367,11 @@ function BrandColorField({ label, value, onChange }: BrandColorFieldProps) {
   );
 }
 
-function createEmptyKit(): BrandKit {
+function createEmptyKit(): BrandKitDraft {
+  const id = createLocalId();
   return {
-    id: `kit-${Date.now()}`,
+    id,
+    localId: id,
     name: "New Brand Kit",
     iconUrl: "https://placehold.co/80x80/111827/ffffff?text=BK",
     colors: {
@@ -358,35 +387,62 @@ function createEmptyKit(): BrandKit {
 }
 
 export function BrandKitsManager({ initialKits }: BrandKitsManagerProps) {
-  const [kits, setKits] = useState(initialKits);
+  const [kits, setKits] = useState<BrandKitDraft[]>(() => initialKits.map(toDraft));
   const [isPending, startTransition] = useTransition();
 
-  const updateKit = (index: number, next: BrandKit) => {
+  const updateKit = (index: number, next: BrandKitDraft) => {
     setKits((current) => current.map((item, i) => (i === index ? next : item)));
   };
 
-  const onSave = (kit: BrandKit) => {
+  const onSave = useCallback((kit: BrandKitDraft) => {
     startTransition(async () => {
-      const result = await saveBrandKitAction(kit);
+      const result = await saveBrandKitAction({
+        id: kit.id,
+        name: kit.name,
+        iconUrl: kit.iconUrl,
+        colors: kit.colors
+      });
       if (!result.success) {
         toast.error(result.error);
         return;
       }
       toast.success(`Saved brand kit "${kit.name}"`);
     });
-  };
+  }, [startTransition]);
 
-  const onDelete = (kit: BrandKit) => {
+  const onDelete = (kit: BrandKitDraft) => {
     startTransition(async () => {
       const result = await deleteBrandKitAction(kit.id);
       if (!result.success) {
         toast.error(result.error);
         return;
       }
-      setKits((current) => current.filter((item) => item.id !== kit.id));
+      setKits((current) => current.filter((item) => item.localId !== kit.localId));
       toast.success(`Deleted "${kit.name}"`);
     });
   };
+
+  const onSaveShortcut = useCallback(() => {
+    const activeElement = document.activeElement as HTMLElement | null;
+    const localId =
+      activeElement
+        ?.closest<HTMLElement>("[data-brand-kit-local-id]")
+        ?.getAttribute("data-brand-kit-local-id") ?? null;
+
+    const targetKit = localId
+      ? kits.find((kit) => kit.localId === localId)
+      : kits.length === 1
+        ? kits[0]
+        : null;
+
+    if (!targetKit) {
+      return;
+    }
+
+    onSave(targetKit);
+  }, [kits, onSave]);
+
+  useSaveShortcut(onSaveShortcut, !isPending && kits.length > 0);
 
   return (
     <div className="space-y-4">
@@ -408,16 +464,13 @@ export function BrandKitsManager({ initialKits }: BrandKitsManagerProps) {
       </Card>
 
       {kits.map((kit, index) => (
-        <Card key={kit.id} className="panel rounded-2xl">
+        <Card
+          key={kit.localId}
+          className="panel rounded-2xl"
+          data-brand-kit-local-id={kit.localId}
+        >
           <CardBody className="space-y-4">
-            <div className="grid gap-3 md:grid-cols-3">
-              <Input
-                label="ID"
-                value={kit.id}
-                onValueChange={(value) =>
-                  updateKit(index, { ...kit, id: value.trim().toLowerCase() })
-                }
-              />
+            <div className="grid gap-3 md:grid-cols-2">
               <Input
                 label="Name"
                 value={kit.name}

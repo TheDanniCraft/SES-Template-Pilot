@@ -1,5 +1,5 @@
 import { GetMetricDataCommand } from "@aws-sdk/client-cloudwatch";
-import { cloudWatchClient } from "@/lib/aws-cloudwatch";
+import { getUserSesClients } from "@/lib/user-ses";
 
 type DeliverabilitySnapshot = {
   windowDays: number;
@@ -100,7 +100,7 @@ function toRate(numerator: number, denominator: number) {
   return Number(((numerator / denominator) * 100).toFixed(2));
 }
 
-export async function getSesDeliverabilitySnapshot(windowDays = 7) {
+export async function getSesDeliverabilitySnapshot(userId: string, windowDays = 7) {
   const safeWindowDays = Math.max(1, Math.min(30, windowDays));
   const periodSeconds = 24 * 60 * 60;
   const periodMs = periodSeconds * 1000;
@@ -108,8 +108,17 @@ export async function getSesDeliverabilitySnapshot(windowDays = 7) {
   const end = new Date(endMs);
   const start = new Date(endMs - safeWindowDays * periodMs);
 
+  const ses = await getUserSesClients(userId);
+  if (!ses.success) {
+    return {
+      success: false as const,
+      error: ses.error,
+      data: null
+    };
+  }
+
   try {
-    const response = await cloudWatchClient.send(
+    const response = await ses.data.cloudWatchClient.send(
       new GetMetricDataCommand({
         StartTime: start,
         EndTime: end,

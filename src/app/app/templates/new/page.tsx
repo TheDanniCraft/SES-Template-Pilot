@@ -1,9 +1,11 @@
 import { TemplateEditorForm } from "@/components/template-editor-form";
 import { listBrandKits } from "@/lib/brand-kits-store";
+import { getServerSessionUser } from "@/lib/server-auth";
 import { normalizeDesignJson } from "@/lib/ses-template-json";
 
 export default async function NewTemplatePage() {
-  const brandKits = await listBrandKits();
+  const user = await getServerSessionUser();
+  const brandKits = user ? await listBrandKits(user.id) : [];
 
   return (
     <section className="space-y-4">

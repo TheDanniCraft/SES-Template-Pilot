@@ -52,10 +52,12 @@ export function DashboardOverview({
   totalSesTemplates,
   sesError,
   sesQuota,
-  deliverability,
-  deliverabilityError
+  deliverability
 }: DashboardOverviewProps) {
   const sesConnected = !sesError;
+  const sesNotConfigured = Boolean(
+    sesError?.includes("SES is not configured for this user")
+  );
   const formatInt = (value: number) =>
     new Intl.NumberFormat("en-US").format(Math.round(value));
 
@@ -80,6 +82,7 @@ export function DashboardOverview({
                   className={`status-breathing-dot ${
                     sesConnected ? "status-breathing-dot-success" : "status-breathing-dot-danger"
                   }`}
+                  style={sesConnected ? undefined : { animation: "none" }}
                 />
               </span>
             }
@@ -101,7 +104,7 @@ export function DashboardOverview({
               as={Link}
               color="primary"
               endContent={<ArrowUpRight className="h-4 w-4" />}
-              href="/templates/new"
+              href="/app/templates/new"
               startContent={<FilePlus2 className="h-4 w-4" />}
             >
               New Template
@@ -119,7 +122,7 @@ export function DashboardOverview({
               as={Link}
               color="success"
               endContent={<ArrowUpRight className="h-4 w-4" />}
-              href="/send"
+              href="/app/send"
               startContent={<Rocket className="h-4 w-4" />}
             >
               Start Campaign
@@ -238,22 +241,16 @@ export function DashboardOverview({
 
       {deliverability ? <SesMetricsCharts points={deliverability.series} /> : null}
 
-      {sesError ? (
+      {sesNotConfigured ? (
         <Chip className="w-fit" color="warning" variant="flat">
-          SES warning: {sesError}
+          SES not set up yet. Go to{" "}
+          <Link className="underline underline-offset-2" href="/app/settings">
+            Settings
+          </Link>
+          .
         </Chip>
       ) : null}
 
-      {deliverabilityError ? (
-        <Chip
-          className="w-fit max-w-full"
-          color="warning"
-          title={deliverabilityError}
-          variant="flat"
-        >
-          Deliverability metrics unavailable
-        </Chip>
-      ) : null}
     </div>
   );
 }

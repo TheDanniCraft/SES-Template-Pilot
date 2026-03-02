@@ -47,7 +47,7 @@ export function HtmlPreviewFrame({
     <iframe
       key={`${previewId}-${theme}`}
       className={`block w-full ${className ?? ""}`.trim()}
-      sandbox="allow-scripts allow-popups allow-popups-to-escape-sandbox"
+      sandbox="allow-scripts"
       scrolling="no"
       srcDoc={srcDoc}
       style={{

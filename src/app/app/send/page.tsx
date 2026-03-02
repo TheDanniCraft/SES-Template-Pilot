@@ -2,6 +2,7 @@ import { SendCampaignForm } from "@/components/send-campaign-form";
 import { extractBodyHtml } from "@/lib/html-utils";
 import { listBrandKits } from "@/lib/brand-kits-store";
 import { listContactBooks } from "@/lib/contact-books-store";
+import { getServerSessionUser } from "@/lib/server-auth";
 import {
   getLocalDraftBySesName,
   getSesTemplate,
@@ -14,8 +15,9 @@ import {
 
 export default async function SendPage() {
   const templatesResponse = await listSesTemplates();
-  const brandKits = await listBrandKits();
-  const contactBooks = await listContactBooks();
+  const user = await getServerSessionUser();
+  const brandKits = user ? await listBrandKits(user.id) : [];
+  const contactBooks = user ? await listContactBooks(user.id) : [];
   const brandKitById = new Map(brandKits.map((kit) => [kit.id, kit]));
 
   const hydratedTemplates = await Promise.all(

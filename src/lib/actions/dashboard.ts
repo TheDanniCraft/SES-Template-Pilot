@@ -1,15 +1,16 @@
-import { count } from "drizzle-orm";
+import { count, eq } from "drizzle-orm";
 import { listSesTemplates } from "@/lib/actions/templates";
 import { db } from "@/lib/db";
 import { sentEmails } from "@/lib/schema";
 import { getSesDeliverabilitySnapshot } from "@/lib/ses-deliverability";
 import { getSesSendingQuota } from "@/lib/ses-quota";
-import { isServerSessionAuthenticated } from "@/lib/server-auth";
+import { getServerSessionUser } from "@/lib/server-auth";
 
 const SEND_RATE_HEADROOM = 0.9;
 
 export async function getDashboardStats() {
-  if (!(await isServerSessionAuthenticated())) {
+  const user = await getServerSessionUser();
+  if (!user) {
     return {
       totalEmailsSent: 0,
       totalSesTemplates: 0,
@@ -20,11 +21,14 @@ export async function getDashboardStats() {
     };
   }
 
-  const [emailCount] = await db.select({ value: count() }).from(sentEmails);
+  const [emailCount] = await db
+    .select({ value: count() })
+    .from(sentEmails)
+    .where(eq(sentEmails.userId, user.id));
   const [sesTemplates, sesQuotaResult, deliverabilityResult] = await Promise.all([
     listSesTemplates(),
-    getSesSendingQuota(),
-    getSesDeliverabilitySnapshot(7)
+    getSesSendingQuota(user.id),
+    getSesDeliverabilitySnapshot(user.id, 7)
   ]);
 
   const sesError = sesTemplates.success

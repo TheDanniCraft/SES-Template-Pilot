@@ -5,14 +5,11 @@ import { z } from "zod";
 import type { ContactBook } from "@/lib/contact-books";
 import { isValidContactEmail, normalizeRecipients } from "@/lib/contact-books";
 import { deleteContactBookById, upsertContactBook } from "@/lib/contact-books-store";
-import { isServerSessionAuthenticated } from "@/lib/server-auth";
+import { getServerSessionUser } from "@/lib/server-auth";
 
 const contactBookSchema = z.object({
-  id: z
-    .string()
-    .trim()
-    .min(2, "ID is required")
-    .regex(/^[a-z0-9-]+$/, "ID must be lowercase letters, numbers, and dashes"),
+  id: z.string().trim().uuid("Invalid contact book id"),
+  previousId: z.string().trim().nullable().optional(),
   name: z.string().trim().min(2, "Name is required"),
   recipients: z
     .array(z.string().trim().toLowerCase())
@@ -30,8 +27,11 @@ const contactBookSchema = z.object({
     })
 });
 
-export async function saveContactBookAction(input: ContactBook) {
-  if (!(await isServerSessionAuthenticated())) {
+export async function saveContactBookAction(
+  input: ContactBook & { previousId?: string | null }
+) {
+  const user = await getServerSessionUser();
+  if (!user) {
     return { success: false, error: "Unauthorized" };
   }
 
@@ -43,19 +43,27 @@ export async function saveContactBookAction(input: ContactBook) {
     };
   }
 
-  await upsertContactBook({
-    id: parsed.data.id,
+  const normalizedId = parsed.data.id.toLowerCase();
+  const normalizedPreviousId = parsed.data.previousId?.toLowerCase() ?? null;
+
+  await upsertContactBook(user.id, {
+    id: normalizedId,
     name: parsed.data.name,
     recipients: normalizeRecipients(parsed.data.recipients)
   });
 
-  revalidatePath("/contact-books");
-  revalidatePath("/send");
+  if (normalizedPreviousId && normalizedPreviousId !== normalizedId) {
+    await deleteContactBookById(user.id, normalizedPreviousId);
+  }
+
+  revalidatePath("/app/contact-books");
+  revalidatePath("/app/send");
   return { success: true };
 }
 
 export async function deleteContactBookAction(id: string) {
-  if (!(await isServerSessionAuthenticated())) {
+  const user = await getServerSessionUser();
+  if (!user) {
     return { success: false, error: "Unauthorized" };
   }
 
@@ -64,8 +72,8 @@ export async function deleteContactBookAction(id: string) {
     return { success: false, error: "ID is required" };
   }
 
-  await deleteContactBookById(target);
-  revalidatePath("/contact-books");
-  revalidatePath("/send");
+  await deleteContactBookById(user.id, target);
+  revalidatePath("/app/contact-books");
+  revalidatePath("/app/send");
   return { success: true };
 }

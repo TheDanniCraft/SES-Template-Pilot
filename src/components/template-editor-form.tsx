@@ -47,6 +47,7 @@ import {
 } from "@/lib/validators";
 import { GrapesEditor } from "@/components/grapes-editor";
 import { HtmlPreviewFrame } from "@/components/html-preview-frame";
+import { useSaveShortcut } from "@/hooks/use-save-shortcut";
 
 type TemplateEditorFormProps = {
   initialValues: TemplateDraftInput;
@@ -236,7 +237,7 @@ export function TemplateEditorForm({
       if (!currentDraftId && result.draftId) {
         // New draft: use a single route replacement to avoid push+refresh loops.
         form.setValue("id", result.draftId, { shouldDirty: false });
-        router.replace(`/templates/${result.draftId}`);
+        router.replace(`/app/templates/${result.draftId}`);
         return;
       }
 
@@ -244,21 +245,7 @@ export function TemplateEditorForm({
     });
   }, [canSaveLocal, form, router, startTransition]);
 
-  useEffect(() => {
-    const onKeyDown = (event: KeyboardEvent) => {
-      const isSaveShortcut =
-        (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "s";
-      if (!isSaveShortcut) {
-        return;
-      }
-
-      event.preventDefault();
-      onSaveLocal();
-    };
-
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, [onSaveLocal]);
+  useSaveShortcut(onSaveLocal, !isPending);
 
   const onSyncSes = () => {
     if (!canSyncSes) {
@@ -324,8 +311,8 @@ export function TemplateEditorForm({
 
       toast.success("Draft reset from SES");
       const targetPath = result.draftId
-        ? `/templates/${result.draftId}`
-        : `/templates/${sesTemplateName}`;
+        ? `/app/templates/${result.draftId}`
+        : `/app/templates/${sesTemplateName}`;
       if (pathname === targetPath) {
         router.refresh();
         return;
@@ -362,7 +349,7 @@ export function TemplateEditorForm({
       }
 
       toast.success("Template deleted");
-      router.replace("/templates");
+      router.replace("/app/templates");
     });
   };
 

@@ -2,6 +2,7 @@ import { notFound } from "next/navigation";
 import { TemplateEditorForm } from "@/components/template-editor-form";
 import { listBrandKits } from "@/lib/brand-kits-store";
 import { extractBodyHtml } from "@/lib/html-utils";
+import { getServerSessionUser } from "@/lib/server-auth";
 import {
   extractBrandKitId,
   extractPreviewVariables,
@@ -27,7 +28,8 @@ const DEFAULT_PREVIEW_VARIABLES = {
 export default async function TemplateEditorPage({
   params
 }: TemplateEditorPageProps) {
-  const brandKits = await listBrandKits();
+  const user = await getServerSessionUser();
+  const brandKits = user ? await listBrandKits(user.id) : [];
   const { id } = await params;
 
   const localById = await getLocalDraftById(id);

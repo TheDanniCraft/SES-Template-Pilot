@@ -3,9 +3,9 @@
 import { SendTemplatedEmailCommand } from "@aws-sdk/client-ses";
 import { db } from "@/lib/db";
 import { sentEmails } from "@/lib/schema";
-import { sesClient } from "@/lib/aws-ses";
 import { getSesSendingQuota } from "@/lib/ses-quota";
-import { isServerSessionAuthenticated } from "@/lib/server-auth";
+import { getServerSessionUser } from "@/lib/server-auth";
+import { getUserSesClients } from "@/lib/user-ses";
 import { campaignSchema, type CampaignInput } from "@/lib/validators";
 
 const SEND_RATE_HEADROOM = 0.9;
@@ -43,7 +43,8 @@ function parseRecipientTemplateDataMap(input: string) {
 }
 
 export async function sendCampaignAction(input: CampaignInput) {
-  if (!(await isServerSessionAuthenticated())) {
+  const user = await getServerSessionUser();
+  if (!user) {
     return {
       success: false,
       error: "Unauthorized"
@@ -58,17 +59,48 @@ export async function sendCampaignAction(input: CampaignInput) {
     };
   }
 
-  const sourceEmail = process.env.SES_SOURCE_EMAIL;
-  if (!sourceEmail) {
+  const { recipients, templateData, templateName } = parsed.data;
+  const recipientTemplateDataMap = parseRecipientTemplateDataMap(templateData);
+  if (!recipientTemplateDataMap) {
     return {
       success: false,
-      error: "SES_SOURCE_EMAIL is not configured"
+      error: "Template Variables JSON must be a per-recipient object map"
     };
   }
 
-  const { recipients, templateData, templateName } = parsed.data;
+  const missingRecipients = recipients.filter(
+    (recipient) => !recipientTemplateDataMap[recipient]
+  );
+  if (missingRecipients.length > 0) {
+    return {
+      success: false,
+      error: `Template Variables JSON is missing entries for: ${missingRecipients.join(", ")}`
+    };
+  }
 
-  const quotaResult = await getSesSendingQuota();
+  const campaignResults: Array<{
+    recipient: string;
+    status: "sent" | "failed";
+    messageId?: string;
+    error?: string;
+  }> = [];
+
+  const ses = await getUserSesClients(user.id);
+  if (!ses.success) {
+    return {
+      success: false,
+      error: ses.error
+    };
+  }
+  const sourceEmail = ses.data.sourceEmail;
+  if (!sourceEmail) {
+    return {
+      success: false,
+      error: "SES source email is not configured. Open /app/settings and set sourceEmail."
+    };
+  }
+
+  const quotaResult = await getSesSendingQuota(user.id);
   if (!quotaResult.success) {
     return {
       success: false,
@@ -91,32 +123,6 @@ export async function sendCampaignAction(input: CampaignInput) {
     };
   }
 
-  const recipientTemplateDataMap = parseRecipientTemplateDataMap(templateData);
-  if (!recipientTemplateDataMap) {
-    return {
-      success: false,
-      error:
-        "Template Variables JSON must be a per-recipient object map"
-    };
-  }
-
-  const missingRecipients = recipients.filter(
-    (recipient) => !recipientTemplateDataMap[recipient]
-  );
-  if (missingRecipients.length > 0) {
-    return {
-      success: false,
-      error: `Template Variables JSON is missing entries for: ${missingRecipients.join(", ")}`
-    };
-  }
-
-  const campaignResults: Array<{
-    recipient: string;
-    status: "sent" | "failed";
-    messageId?: string;
-    error?: string;
-  }> = [];
-
   const effectiveRate = quotaResult.data.maxSendRate * SEND_RATE_HEADROOM;
   const minDelayMs = effectiveRate > 0 ? Math.ceil(1000 / effectiveRate) : 0;
   let lastSendStartedAt = 0;
@@ -133,7 +139,7 @@ export async function sendCampaignAction(input: CampaignInput) {
 
       const templateDataForRecipient = recipientTemplateDataMap[recipient] ?? {};
 
-      const response = await sesClient.send(
+      const response = await ses.data.sesClient.send(
         new SendTemplatedEmailCommand({
           Source: sourceEmail,
           Destination: { ToAddresses: [recipient] },
@@ -149,6 +155,7 @@ export async function sendCampaignAction(input: CampaignInput) {
       });
 
       await db.insert(sentEmails).values({
+        userId: user.id,
         recipient,
         templateUsed: templateName,
         status: "SENT",
@@ -165,6 +172,7 @@ export async function sendCampaignAction(input: CampaignInput) {
       });
 
       await db.insert(sentEmails).values({
+        userId: user.id,
         recipient,
         templateUsed: templateName,
         status: "FAILED",

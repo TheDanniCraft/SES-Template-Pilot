@@ -4,7 +4,7 @@ import { revalidatePath } from "next/cache";
 import { z } from "zod";
 import type { BrandKit } from "@/lib/brand-kits";
 import { deleteBrandKitById, upsertBrandKit } from "@/lib/brand-kits-store";
-import { isServerSessionAuthenticated } from "@/lib/server-auth";
+import { getServerSessionUser } from "@/lib/server-auth";
 
 const hexSchema = z
   .string()
@@ -12,11 +12,7 @@ const hexSchema = z
   .regex(/^#?[0-9a-fA-F]{3}([0-9a-fA-F]{3})?$/, "Invalid hex color");
 
 const brandKitSchema = z.object({
-  id: z
-    .string()
-    .trim()
-    .min(2, "ID is required")
-    .regex(/^[a-z0-9-]+$/, "ID must be lowercase letters, numbers, and dashes"),
+  id: z.string().trim().uuid("Invalid brand kit id"),
   name: z.string().trim().min(2, "Name is required"),
   iconUrl: z.string().trim().url("Icon URL must be a valid URL"),
   colors: z.object({
@@ -31,7 +27,8 @@ const brandKitSchema = z.object({
 });
 
 export async function saveBrandKitAction(input: BrandKit) {
-  if (!(await isServerSessionAuthenticated())) {
+  const user = await getServerSessionUser();
+  if (!user) {
     return {
       success: false,
       error: "Unauthorized"
@@ -46,25 +43,31 @@ export async function saveBrandKitAction(input: BrandKit) {
     };
   }
 
-  await upsertBrandKit(parsed.data as BrandKit);
-  revalidatePath("/brand-kits");
-  revalidatePath("/templates/new");
-  revalidatePath("/templates");
+  await upsertBrandKit(user.id, parsed.data as BrandKit);
+  revalidatePath("/app/brand-kits");
+  revalidatePath("/app/templates/new");
+  revalidatePath("/app/templates");
   return { success: true };
 }
 
 export async function deleteBrandKitAction(id: string) {
-  if (!(await isServerSessionAuthenticated())) {
+  const user = await getServerSessionUser();
+  if (!user) {
     return { success: false, error: "Unauthorized" };
   }
 
-  if (!id.trim()) {
+  const normalizedId = id.trim().toLowerCase();
+  if (!normalizedId) {
     return { success: false, error: "ID is required" };
   }
 
-  await deleteBrandKitById(id);
-  revalidatePath("/brand-kits");
-  revalidatePath("/templates/new");
-  revalidatePath("/templates");
+  if (!z.string().uuid().safeParse(normalizedId).success) {
+    return { success: false, error: "Invalid brand kit id" };
+  }
+
+  await deleteBrandKitById(user.id, normalizedId);
+  revalidatePath("/app/brand-kits");
+  revalidatePath("/app/templates/new");
+  revalidatePath("/app/templates");
   return { success: true };
 }

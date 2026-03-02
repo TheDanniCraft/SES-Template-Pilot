@@ -1,6 +1,8 @@
 "use client";
 
 import Link from "next/link";
+import { useTransition } from "react";
+import { useRouter } from "next/navigation";
 import {
   Button,
   Card,
@@ -14,7 +16,7 @@ import {
   TableHeader,
   TableRow
 } from "@heroui/react";
-import { Plus } from "lucide-react";
+import { Plus, RefreshCw } from "lucide-react";
 
 type TemplateRow = {
   name: string;
@@ -29,6 +31,15 @@ type TemplatesTableProps = {
 };
 
 export function TemplatesTable({ templates, success, error }: TemplatesTableProps) {
+  const router = useRouter();
+  const [isRefreshing, startRefreshing] = useTransition();
+
+  const onReloadFromSes = () => {
+    startRefreshing(() => {
+      router.refresh();
+    });
+  };
+
   return (
     <Card className="panel rounded-2xl">
       <CardHeader className="flex flex-wrap items-center justify-between gap-3">
@@ -36,15 +47,25 @@ export function TemplatesTable({ templates, success, error }: TemplatesTableProp
           <p className="text-xs uppercase tracking-[0.18em] text-cyan-300/90">Templates</p>
           <h1 className="text-xl font-semibold">Template Library</h1>
         </div>
-        <Button
-          as={Link}
-          color="primary"
-          href="/templates/new"
-          startContent={<Plus className="h-4 w-4" />}
-          variant="shadow"
-        >
-          Create Template
-        </Button>
+        <div className="flex flex-wrap items-center gap-2">
+          <Button
+            isLoading={isRefreshing}
+            startContent={!isRefreshing ? <RefreshCw className="h-4 w-4" /> : undefined}
+            variant="flat"
+            onPress={onReloadFromSes}
+          >
+            Reload from SES
+          </Button>
+          <Button
+            as={Link}
+            color="primary"
+            href="/app/templates/new"
+            startContent={<Plus className="h-4 w-4" />}
+            variant="shadow"
+          >
+            Create Template
+          </Button>
+        </div>
       </CardHeader>
 
       <CardBody className="space-y-4">
@@ -62,7 +83,7 @@ export function TemplatesTable({ templates, success, error }: TemplatesTableProp
             {templates.map((template) => (
               <TableRow key={template.name}>
                 <TableCell>
-                  <Link className="font-medium text-cyan-300 hover:underline" href={`/templates/${template.name}`}>
+                  <Link className="font-medium text-cyan-300 hover:underline" href={`/app/templates/${template.name}`}>
                     {template.name || "-"}
                   </Link>
                 </TableCell>

@@ -16,14 +16,34 @@ export function sanitizeEditableHtml(input: string) {
   return (input || "")
     .replace(/<style[\s\S]*?<\/style>/gi, "")
     .replace(/<script[\s\S]*?<\/script>/gi, "")
+    .replace(/<iframe[\s\S]*?<\/iframe>/gi, "")
+    .replace(/<object[\s\S]*?<\/object>/gi, "")
+    .replace(/<embed[^>]*>/gi, "")
+    .replace(/<form[\s\S]*?<\/form>/gi, "")
     .replace(/<link[^>]*>/gi, "")
     .replace(/<meta[^>]*>/gi, "")
+    .replace(/<base[^>]*>/gi, "")
     .replace(/<title[\s\S]*?<\/title>/gi, "")
+    .replace(/\son[a-z]+\s*=\s*(['"])[\s\S]*?\1/gi, "")
+    .replace(/\son[a-z]+\s*=\s*[^\s>]+/gi, "")
+    .replace(/\s(href|src)\s*=\s*(['"])\s*javascript:[\s\S]*?\2/gi, ' $1="#"')
     .trim();
 }
 
 function stripScriptTags(input: string) {
   return (input || "").replace(/<script[\s\S]*?<\/script>/gi, "");
+}
+
+function sanitizePreviewHtml(input: string) {
+  return (input || "")
+    .replace(/<script[\s\S]*?<\/script>/gi, "")
+    .replace(/<iframe[\s\S]*?<\/iframe>/gi, "")
+    .replace(/<object[\s\S]*?<\/object>/gi, "")
+    .replace(/<embed[^>]*>/gi, "")
+    .replace(/\son[a-z]+\s*=\s*(['"])[\s\S]*?\1/gi, "")
+    .replace(/\son[a-z]+\s*=\s*[^\s>]+/gi, "")
+    .replace(/\s(href|src)\s*=\s*(['"])\s*javascript:[\s\S]*?\2/gi, ' $1="#"')
+    .trim();
 }
 
 const WRAPPER_START =
@@ -222,7 +242,7 @@ export function toPreviewDocument(
   theme: "dark" | "light" | "system" = "light",
   previewId = "preview"
 ) {
-  const raw = stripScriptTags((input || "").trim());
+  const raw = sanitizePreviewHtml(stripScriptTags((input || "").trim()));
   const source = raw || "<p>No preview</p>";
 
   if (!raw) {

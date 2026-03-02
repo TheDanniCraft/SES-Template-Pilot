@@ -1,5 +1,5 @@
 import { GetSendQuotaCommand } from "@aws-sdk/client-ses";
-import { sesClient } from "@/lib/aws-ses";
+import { getUserSesClients } from "@/lib/user-ses";
 
 export type SesSendingQuota = {
   max24HourSend: number;
@@ -8,9 +8,18 @@ export type SesSendingQuota = {
   remaining24HourSend: number;
 };
 
-export async function getSesSendingQuota() {
+export async function getSesSendingQuota(userId: string) {
+  const ses = await getUserSesClients(userId);
+  if (!ses.success) {
+    return {
+      success: false as const,
+      error: ses.error,
+      data: null
+    };
+  }
+
   try {
-    const response = await sesClient.send(new GetSendQuotaCommand({}));
+    const response = await ses.data.sesClient.send(new GetSendQuotaCommand({}));
 
     const max24HourSend = Number(response.Max24HourSend ?? 0);
     const maxSendRate = Number(response.MaxSendRate ?? 0);

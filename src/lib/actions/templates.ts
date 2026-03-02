@@ -7,11 +7,10 @@ import {
   ListTemplatesCommand,
   UpdateTemplateCommand
 } from "@aws-sdk/client-ses";
-import { desc, eq } from "drizzle-orm";
+import { and, desc, eq } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { nowSql, templateDrafts } from "@/lib/schema";
-import { sesClient } from "@/lib/aws-ses";
-import { isServerSessionAuthenticated } from "@/lib/server-auth";
+import { getServerSessionUser } from "@/lib/server-auth";
 import {
   attachPreviewVariables,
   attachBrandKitId,
@@ -19,6 +18,7 @@ import {
   extractPreviewVariables,
   normalizeDesignJson
 } from "@/lib/ses-template-json";
+import { getUserSesClients } from "@/lib/user-ses";
 import {
   syncTemplateSchema,
   templateDraftSchema,
@@ -44,12 +44,13 @@ function isTemplateMissingError(error: unknown) {
   );
 }
 
-async function hasSession() {
-  return isServerSessionAuthenticated();
+async function getAuthorizedUser() {
+  return getServerSessionUser();
 }
 
 export async function listSesTemplates() {
-  if (!(await hasSession())) {
+  const user = await getAuthorizedUser();
+  if (!user) {
     return {
       success: false,
       error: "Unauthorized",
@@ -57,8 +58,17 @@ export async function listSesTemplates() {
     };
   }
 
+  const ses = await getUserSesClients(user.id);
+  if (!ses.success) {
+    return {
+      success: false,
+      error: ses.error,
+      data: []
+    };
+  }
+
   try {
-    const response = await sesClient.send(
+    const response = await ses.data.sesClient.send(
       new ListTemplatesCommand({
         MaxItems: 50
       })
@@ -75,7 +85,7 @@ export async function listSesTemplates() {
         }
 
         try {
-          const details = await sesClient.send(
+          const details = await ses.data.sesClient.send(
             new GetTemplateCommand({
               TemplateName: item.Name
             })
@@ -106,7 +116,8 @@ export async function listSesTemplates() {
 }
 
 export async function getSesTemplate(name: string) {
-  if (!(await hasSession())) {
+  const user = await getAuthorizedUser();
+  if (!user) {
     return {
       success: false,
       error: "Unauthorized",
@@ -114,8 +125,17 @@ export async function getSesTemplate(name: string) {
     };
   }
 
+  const ses = await getUserSesClients(user.id);
+  if (!ses.success) {
+    return {
+      success: false,
+      error: ses.error,
+      data: null
+    };
+  }
+
   try {
-    const response = await sesClient.send(
+    const response = await ses.data.sesClient.send(
       new GetTemplateCommand({
         TemplateName: name
       })
@@ -132,19 +152,22 @@ export async function getSesTemplate(name: string) {
 }
 
 export async function listLocalDrafts() {
-  if (!(await hasSession())) {
+  const user = await getAuthorizedUser();
+  if (!user) {
     return [];
   }
 
   const drafts = await db
     .select()
     .from(templateDrafts)
+    .where(eq(templateDrafts.userId, user.id))
     .orderBy(desc(templateDrafts.updatedAt));
   return drafts;
 }
 
 export async function getLocalDraftById(id: string) {
-  if (!(await hasSession())) {
+  const user = await getAuthorizedUser();
+  if (!user) {
     return null;
   }
 
@@ -153,24 +176,29 @@ export async function getLocalDraftById(id: string) {
   }
 
   const draft = await db.query.templateDrafts.findFirst({
-    where: eq(templateDrafts.id, id)
+    where: and(eq(templateDrafts.id, id), eq(templateDrafts.userId, user.id))
   });
   return draft ?? null;
 }
 
 export async function getLocalDraftBySesName(name: string) {
-  if (!(await hasSession())) {
+  const user = await getAuthorizedUser();
+  if (!user) {
     return null;
   }
 
   const draft = await db.query.templateDrafts.findFirst({
-    where: eq(templateDrafts.sesTemplateName, name)
+    where: and(
+      eq(templateDrafts.sesTemplateName, name),
+      eq(templateDrafts.userId, user.id)
+    )
   });
   return draft ?? null;
 }
 
 export async function saveTemplateDraftAction(input: TemplateDraftInput) {
-  if (!(await hasSession())) {
+  const user = await getAuthorizedUser();
+  if (!user) {
     return {
       success: false,
       error: "Unauthorized"
@@ -200,7 +228,7 @@ export async function saveTemplateDraftAction(input: TemplateDraftInput) {
   );
 
   if (payload.id) {
-    await db
+    const [updated] = await db
       .update(templateDrafts)
       .set({
         name: payload.name,
@@ -211,13 +239,19 @@ export async function saveTemplateDraftAction(input: TemplateDraftInput) {
         designJson: normalizedDesignJson,
         updatedAt: nowSql
       })
-      .where(eq(templateDrafts.id, payload.id));
-    return { success: true, draftId: payload.id };
+      .where(and(eq(templateDrafts.id, payload.id), eq(templateDrafts.userId, user.id)))
+      .returning({ id: templateDrafts.id });
+
+    if (!updated) {
+      return { success: false, error: "Draft not found" };
+    }
+    return { success: true, draftId: updated.id };
   }
 
   const [draft] = await db
     .insert(templateDrafts)
     .values({
+      userId: user.id,
       name: payload.name,
       sesTemplateName: payload.sesTemplateName,
       subject: payload.subject,
@@ -231,10 +265,19 @@ export async function saveTemplateDraftAction(input: TemplateDraftInput) {
 }
 
 export async function syncTemplateToSesAction(input: SyncTemplateInput) {
-  if (!(await hasSession())) {
+  const user = await getAuthorizedUser();
+  if (!user) {
     return {
       success: false,
       error: "Unauthorized"
+    };
+  }
+
+  const ses = await getUserSesClients(user.id);
+  if (!ses.success) {
+    return {
+      success: false,
+      error: ses.error
     };
   }
 
@@ -248,11 +291,14 @@ export async function syncTemplateToSesAction(input: SyncTemplateInput) {
 
   const payload = parsed.data;
   const existingDraft = await db.query.templateDrafts.findFirst({
-    where: eq(templateDrafts.sesTemplateName, payload.sesTemplateName)
+    where: and(
+      eq(templateDrafts.sesTemplateName, payload.sesTemplateName),
+      eq(templateDrafts.userId, user.id)
+    )
   });
 
   try {
-    await sesClient.send(
+    await ses.data.sesClient.send(
       new UpdateTemplateCommand({
         Template: {
           TemplateName: payload.sesTemplateName,
@@ -264,7 +310,7 @@ export async function syncTemplateToSesAction(input: SyncTemplateInput) {
     );
   } catch {
     try {
-      await sesClient.send(
+      await ses.data.sesClient.send(
         new CreateTemplateCommand({
           Template: {
             TemplateName: payload.sesTemplateName,
@@ -300,7 +346,12 @@ export async function syncTemplateToSesAction(input: SyncTemplateInput) {
       ),
       updatedAt: nowSql
     })
-    .where(eq(templateDrafts.sesTemplateName, payload.sesTemplateName));
+    .where(
+      and(
+        eq(templateDrafts.userId, user.id),
+        eq(templateDrafts.sesTemplateName, payload.sesTemplateName)
+      )
+    );
 
   return { success: true };
 }
@@ -311,7 +362,8 @@ type DeleteTemplateInput = {
 };
 
 export async function deleteTemplateAction(input: DeleteTemplateInput) {
-  if (!(await hasSession())) {
+  const user = await getAuthorizedUser();
+  if (!user) {
     return { success: false, error: "Unauthorized" };
   }
 
@@ -329,22 +381,37 @@ export async function deleteTemplateAction(input: DeleteTemplateInput) {
     }
 
     const draft = await db.query.templateDrafts.findFirst({
-      where: eq(templateDrafts.id, draftId)
+      where: and(eq(templateDrafts.id, draftId), eq(templateDrafts.userId, user.id))
     });
     if (draft?.sesTemplateName) {
       sesTemplateName = draft.sesTemplateName;
     }
 
-    await db.delete(templateDrafts).where(eq(templateDrafts.id, draftId));
+    await db
+      .delete(templateDrafts)
+      .where(and(eq(templateDrafts.id, draftId), eq(templateDrafts.userId, user.id)));
   }
 
   if (sesTemplateName) {
     await db
       .delete(templateDrafts)
-      .where(eq(templateDrafts.sesTemplateName, sesTemplateName));
+      .where(
+        and(
+          eq(templateDrafts.userId, user.id),
+          eq(templateDrafts.sesTemplateName, sesTemplateName)
+        )
+      );
+
+    const ses = await getUserSesClients(user.id);
+    if (!ses.success) {
+      return {
+        success: false,
+        error: `${ses.error} Local draft was deleted.`
+      };
+    }
 
     try {
-      await sesClient.send(
+      await ses.data.sesClient.send(
         new DeleteTemplateCommand({
           TemplateName: sesTemplateName
         })
@@ -371,8 +438,14 @@ type ResetTemplateFromSesInput = {
 export async function resetTemplateDraftFromSesAction(
   input: ResetTemplateFromSesInput
 ) {
-  if (!(await hasSession())) {
+  const user = await getAuthorizedUser();
+  if (!user) {
     return { success: false, error: "Unauthorized" };
+  }
+
+  const ses = await getUserSesClients(user.id);
+  if (!ses.success) {
+    return { success: false, error: ses.error };
   }
 
   const draftId = input.draftId?.trim();
@@ -383,7 +456,7 @@ export async function resetTemplateDraftFromSesAction(
   }
 
   try {
-    const response = await sesClient.send(
+    const response = await ses.data.sesClient.send(
       new GetTemplateCommand({
         TemplateName: sesTemplateName
       })
@@ -396,13 +469,16 @@ export async function resetTemplateDraftFromSesAction(
 
     let existingDraft = draftId
       ? await db.query.templateDrafts.findFirst({
-          where: eq(templateDrafts.id, draftId)
+          where: and(eq(templateDrafts.id, draftId), eq(templateDrafts.userId, user.id))
         })
       : null;
 
     if (!existingDraft) {
       existingDraft = await db.query.templateDrafts.findFirst({
-        where: eq(templateDrafts.sesTemplateName, sesTemplateName)
+        where: and(
+          eq(templateDrafts.sesTemplateName, sesTemplateName),
+          eq(templateDrafts.userId, user.id)
+        )
       });
     }
 
@@ -433,7 +509,7 @@ export async function resetTemplateDraftFromSesAction(
           ...payload,
           updatedAt: nowSql
         })
-        .where(eq(templateDrafts.id, existingDraft.id));
+        .where(and(eq(templateDrafts.id, existingDraft.id), eq(templateDrafts.userId, user.id)));
 
       return {
         success: true,
@@ -455,7 +531,10 @@ export async function resetTemplateDraftFromSesAction(
 
     const [created] = await db
       .insert(templateDrafts)
-      .values(payload)
+      .values({
+        userId: user.id,
+        ...payload
+      })
       .returning({ id: templateDrafts.id });
 
     return {
