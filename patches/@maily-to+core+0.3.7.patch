@@ -1,0 +1,28 @@
+diff --git a/node_modules/@maily-to/core/dist/index.cjs b/node_modules/@maily-to/core/dist/index.cjs
+index c4dba3f..ee5813f 100644
+--- a/node_modules/@maily-to/core/dist/index.cjs
++++ b/node_modules/@maily-to/core/dist/index.cjs
+@@ -9528,6 +9528,9 @@ var LinkCardExtension = import_core13.Node.create({
+   },
+   parseHTML() {
+     return [
++      {
++        tag: `div[data-maily-component="${this.name}"]`
++      },
+       {
+         tag: `a[data-maily-component="${this.name}"]`
+       }
+diff --git a/node_modules/@maily-to/core/dist/index.mjs b/node_modules/@maily-to/core/dist/index.mjs
+index e825b49..4255379 100644
+--- a/node_modules/@maily-to/core/dist/index.mjs
++++ b/node_modules/@maily-to/core/dist/index.mjs
+@@ -9553,6 +9553,9 @@ var LinkCardExtension = Node8.create({
+   },
+   parseHTML() {
+     return [
++      {
++        tag: `div[data-maily-component="${this.name}"]`
++      },
+       {
+         tag: `a[data-maily-component="${this.name}"]`
+       }
