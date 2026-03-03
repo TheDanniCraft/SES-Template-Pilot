@@ -51,6 +51,7 @@ import {
   templateDraftSchema,
   type TemplateDraftInput
 } from "@/lib/validators";
+import { renderEditorJsonToHtml } from "@/lib/maily-render";
 import { MailyEditor, type MailyEditorHandle } from "@/components/maily-editor";
 import { HtmlPreviewFrame } from "@/components/html-preview-frame";
 import { useSaveShortcut } from "@/hooks/use-save-shortcut";
@@ -93,7 +94,7 @@ function extractTemplateVariableKeys(...sources: Array<string | undefined>) {
   return Array.from(keys).sort((a, b) => a.localeCompare(b));
 }
 
-function resetAppliedBrandKitValues(
+function applyBrandKitToExistingNodes(
   node: Record<string, unknown>,
   brandKit: BrandKit
 ): Record<string, unknown> {
@@ -106,30 +107,18 @@ function resetAppliedBrandKitValues(
 
   if (attrs) {
     if (type === "button") {
-      if (attrs.buttonColor === brandKit.colors.accent) {
-        delete attrs.buttonColor;
-      }
-      if (attrs.textColor === brandKit.colors.buttonText) {
-        delete attrs.textColor;
-      }
+      attrs.buttonColor = brandKit.colors.accent;
+      attrs.textColor = brandKit.colors.buttonText;
     }
 
     if (type === "section") {
-      if (attrs.backgroundColor === brandKit.colors.surface) {
-        delete attrs.backgroundColor;
-      }
-      if (attrs.borderColor === brandKit.colors.border) {
-        delete attrs.borderColor;
-      }
+      attrs.backgroundColor = brandKit.colors.surface;
+      attrs.borderColor = brandKit.colors.border;
     }
 
     if (type === "logo") {
-      if (attrs.src === brandKit.iconUrl) {
-        attrs.src = "";
-      }
-      if (attrs.alt === `${brandKit.name} logo`) {
-        attrs.alt = "Brand logo";
-      }
+      attrs.src = brandKit.iconUrl;
+      attrs.alt = `${brandKit.name} logo`;
     }
 
     nextNode.attrs = attrs;
@@ -137,7 +126,45 @@ function resetAppliedBrandKitValues(
 
   if (Array.isArray(node.content)) {
     nextNode.content = (node.content as Array<Record<string, unknown>>).map((child) =>
-      resetAppliedBrandKitValues(child, brandKit)
+      applyBrandKitToExistingNodes(child, brandKit)
+    );
+  }
+
+  return nextNode;
+}
+
+function resetBrandKitNodesToMailyDefaults(
+  node: Record<string, unknown>
+): Record<string, unknown> {
+  const nextNode: Record<string, unknown> = { ...node };
+  const type = typeof node.type === "string" ? node.type : "";
+  const attrs =
+    node.attrs && typeof node.attrs === "object" && !Array.isArray(node.attrs)
+      ? { ...(node.attrs as Record<string, unknown>) }
+      : undefined;
+
+  if (attrs) {
+    if (type === "button") {
+      delete attrs.buttonColor;
+      delete attrs.textColor;
+    }
+
+    if (type === "section") {
+      delete attrs.backgroundColor;
+      delete attrs.borderColor;
+    }
+
+    if (type === "logo") {
+      delete attrs.src;
+      delete attrs.alt;
+    }
+
+    nextNode.attrs = attrs;
+  }
+
+  if (Array.isArray(node.content)) {
+    nextNode.content = (node.content as Array<Record<string, unknown>>).map((child) =>
+      resetBrandKitNodesToMailyDefaults(child)
     );
   }
 
@@ -157,6 +184,9 @@ export function TemplateEditorForm({
   const [previewTheme, setPreviewTheme] = useState<"dark" | "light">("dark");
   const [autoPlainText, setAutoPlainText] = useState(true);
   const [editorRefreshToken, setEditorRefreshToken] = useState(0);
+  const [appliedBrandKitId, setAppliedBrandKitId] = useState<string | undefined>(
+    initialValues.brandKitId
+  );
   const [builderSeed, setBuilderSeed] = useState(() => ({
     html: initialValues.htmlContent ?? "",
     contentJson: toEditorJson(initialValues.editorJson)
@@ -168,6 +198,7 @@ export function TemplateEditorForm({
     resolver: zodResolver(templateDraftSchema),
     defaultValues: {
       ...initialValues,
+      brandKitId: initialValues.brandKitId ?? "",
       previewVariables: initialValues.previewVariables ?? DEFAULT_PREVIEW_VARIABLES
     }
   });
@@ -200,8 +231,8 @@ export function TemplateEditorForm({
   );
   const templateVariableKeys = detectedVariableKeys;
   const selectedBrandKit = useMemo(
-    () => getBrandKitById(brandKits, values.brandKitId),
-    [brandKits, values.brandKitId]
+    () => getBrandKitById(brandKits, appliedBrandKitId),
+    [appliedBrandKitId, brandKits]
   );
   const brandKitOptions = useMemo(
     () => [
@@ -210,6 +241,8 @@ export function TemplateEditorForm({
     ],
     [brandKits]
   );
+  const selectedBrandKitId = (values.brandKitId ?? "").trim() || undefined;
+  const hasUnappliedBrandKitSelection = selectedBrandKitId !== appliedBrandKitId;
 
   useEffect(() => {
     const allowed = new Set(detectedVariableKeys);
@@ -307,6 +340,40 @@ export function TemplateEditorForm({
     normalizedHtml.length >= 2 &&
     normalizedText.length >= 2;
 
+  const flushBuilderSnapshot = useCallback(async () => {
+    const snapshot = await mailyEditorRef.current?.flush();
+    if (!snapshot) {
+      return null;
+    }
+
+    setLiveBuilderHtml(snapshot.html);
+    form.setValue("htmlContent", snapshot.html, { shouldDirty: true });
+    form.setValue("editorJson", snapshot.contentJson, { shouldDirty: true });
+    return snapshot;
+  }, [form]);
+
+  const setHtmlEditModeWithSync = useCallback(
+    (nextMode: "builder" | "raw") => {
+      void (async () => {
+        if (nextMode === "raw") {
+          await flushBuilderSnapshot();
+          setHtmlEditMode("raw");
+          return;
+        }
+
+        const nextHtml = form.getValues("htmlContent") ?? "";
+        setBuilderSeed({
+          html: nextHtml,
+          contentJson: toEditorJson(form.getValues("editorJson"))
+        });
+        setLiveBuilderHtml(nextHtml);
+        setEditorRefreshToken((current) => current + 1);
+        setHtmlEditMode("builder");
+      })();
+    },
+    [flushBuilderSnapshot, form]
+  );
+
   const onSaveLocal = useCallback(() => {
     if (!canSaveLocal) {
       toast.error("Required fields are missing");
@@ -318,7 +385,7 @@ export function TemplateEditorForm({
     startTransition(async () => {
       const payload = form.getValues();
       if (htmlEditMode === "builder") {
-        const snapshot = await mailyEditorRef.current?.flush();
+        const snapshot = await flushBuilderSnapshot();
         if (!snapshot) {
           toast.error("Failed to compile template HTML. Please try again.");
           return;
@@ -343,7 +410,7 @@ export function TemplateEditorForm({
 
       router.refresh();
     });
-  }, [canSaveLocal, form, htmlEditMode, router, startTransition]);
+  }, [canSaveLocal, flushBuilderSnapshot, form, htmlEditMode, router, startTransition]);
 
   useSaveShortcut(onSaveLocal, !isPending);
 
@@ -356,7 +423,7 @@ export function TemplateEditorForm({
     startTransition(async () => {
       const payload = form.getValues();
       if (htmlEditMode === "builder") {
-        const snapshot = await mailyEditorRef.current?.flush();
+        const snapshot = await flushBuilderSnapshot();
         if (!snapshot) {
           toast.error("Failed to compile template HTML. Please try again.");
           return;
@@ -384,21 +451,41 @@ export function TemplateEditorForm({
   };
 
   const onApplyBrandKit = () => {
-    const selected = getBrandKitById(brandKits, form.getValues("brandKitId"));
-    if (!selected) {
-      toast.error("Select a brand kit first");
-      return;
-    }
-    const nextHtml = form.getValues("htmlContent") ?? "";
-    setBuilderSeed({
-      html: nextHtml,
-      contentJson: toEditorJson(form.getValues("editorJson"))
-    });
-    setLiveBuilderHtml(nextHtml);
-    setEditorRefreshToken((current) => current + 1);
-    toast.success(
-      `${selected.name} defaults are active for new builder blocks.`
-    );
+    void (async () => {
+      if (htmlEditMode === "builder") {
+        await flushBuilderSnapshot();
+      }
+
+      const selectedId = (form.getValues("brandKitId") ?? "").trim() || undefined;
+      const selected = getBrandKitById(brandKits, selectedId);
+      const currentJson = toEditorJson(form.getValues("editorJson"));
+      const nextJson = currentJson
+        ? selected
+          ? applyBrandKitToExistingNodes(currentJson, selected)
+          : resetBrandKitNodesToMailyDefaults(currentJson)
+        : currentJson;
+
+      form.setValue("editorJson", nextJson, { shouldDirty: true });
+
+      const fallbackHtml = form.getValues("htmlContent") ?? "";
+      const nextHtml =
+        nextJson && Object.keys(nextJson).length > 0
+          ? await renderEditorJsonToHtml(nextJson, selected)
+          : fallbackHtml;
+      form.setValue("htmlContent", nextHtml, { shouldDirty: true });
+      setBuilderSeed({
+        html: nextHtml,
+        contentJson: nextJson
+      });
+      setLiveBuilderHtml(nextHtml);
+      setAppliedBrandKitId(selectedId);
+      setEditorRefreshToken((current) => current + 1);
+      toast.success(
+        selected
+          ? `${selected.name} applied to existing content and new blocks.`
+          : "Brand kit removed. Original default styling restored."
+      );
+    })();
   };
 
   const onResetFromSes = () => {
@@ -428,6 +515,9 @@ export function TemplateEditorForm({
 
       if (result.template) {
         form.reset(result.template);
+        const resetBrandKitId = (result.template.brandKitId ?? "").trim();
+        form.setValue("brandKitId", resetBrandKitId, { shouldDirty: false });
+        setAppliedBrandKitId(resetBrandKitId || undefined);
         const nextSeed = {
           html: result.template.htmlContent ?? "",
           contentJson: toEditorJson(result.template.editorJson)
@@ -514,39 +604,23 @@ export function TemplateEditorForm({
                 <Select
                   label="Brand Kit"
                   placeholder="Select a brand kit"
+                  selectionMode="single"
                   selectedKeys={
-                    field.value
-                      ? new Set([field.value])
-                      : new Set([NO_BRAND_KIT_KEY])
+                    new Set([
+                      (field.value ?? "").trim() || NO_BRAND_KIT_KEY
+                    ])
                   }
                   onSelectionChange={(keys) => {
-                    const selected = Array.from(keys)[0];
-                    const previousKit = getBrandKitById(brandKits, field.value);
-                    const selectedValue = selected ? String(selected) : NO_BRAND_KIT_KEY;
-
-                    if (selectedValue === NO_BRAND_KIT_KEY) {
-                      field.onChange(undefined);
-
-                      const currentEditorJson = toEditorJson(form.getValues("editorJson"));
-                      if (previousKit && currentEditorJson) {
-                        const resetContent = resetAppliedBrandKitValues(
-                          currentEditorJson,
-                          previousKit
-                        );
-                        form.setValue("editorJson", resetContent, {
-                          shouldDirty: true
-                        });
-                        setBuilderSeed({
-                          html: form.getValues("htmlContent") ?? "",
-                          contentJson: resetContent
-                        });
-                        setLiveBuilderHtml(form.getValues("htmlContent") ?? "");
-                        setEditorRefreshToken((current) => current + 1);
-                      }
-                      return;
-                    }
-
-                    field.onChange(selectedValue);
+                    const selectedKey =
+                      keys === "all" ? undefined : Array.from(keys)[0];
+                    const selectedValue = selectedKey
+                      ? String(selectedKey)
+                      : NO_BRAND_KIT_KEY;
+                    field.onChange(
+                      selectedValue === NO_BRAND_KIT_KEY
+                        ? ""
+                        : selectedValue
+                    );
                   }}
                 >
                   {brandKitOptions.map((option) => (
@@ -557,6 +631,7 @@ export function TemplateEditorForm({
             />
             <Button
               className="h-14 md:self-end"
+              isDisabled={!hasUnappliedBrandKitSelection}
               startContent={<Brush className="h-4 w-4" />}
               type="button"
               variant="flat"
@@ -573,24 +648,29 @@ export function TemplateEditorForm({
             onSelectionChange={(key) => setEditorMode(key as "html" | "text")}
           >
             <Tab key="html" title="HTML Editor">
-              <Tabs
-                aria-label="HTML edit mode"
-                selectedKey={htmlEditMode}
-                onSelectionChange={(key) => {
-                  const nextMode = key as "builder" | "raw";
-                  setHtmlEditMode(nextMode);
-                  if (nextMode === "builder") {
-                    const nextHtml = form.getValues("htmlContent") ?? "";
-                    setBuilderSeed({
-                      html: nextHtml,
-                      contentJson: toEditorJson(form.getValues("editorJson"))
-                    });
-                    setLiveBuilderHtml(nextHtml);
-                    setEditorRefreshToken((current) => current + 1);
-                  }
-                }}
-              >
-                <Tab key="builder" title="Builder">
+              <div className="space-y-3">
+                <div className="grid grid-cols-2 gap-2">
+                  <Button
+                    color={htmlEditMode === "builder" ? "primary" : "default"}
+                    type="button"
+                    variant="flat"
+                    onPress={() => setHtmlEditModeWithSync("builder")}
+                  >
+                    Builder
+                  </Button>
+                  <Button
+                    color={htmlEditMode === "raw" ? "primary" : "default"}
+                    type="button"
+                    variant="flat"
+                    onPress={() => setHtmlEditModeWithSync("raw")}
+                  >
+                    Raw HTML
+                  </Button>
+                </div>
+                <div
+                  aria-hidden={htmlEditMode !== "builder"}
+                  className={htmlEditMode === "builder" ? "block" : "hidden"}
+                >
                   <MailyEditor
                     ref={mailyEditorRef}
                     contentJson={builderSeed.contentJson}
@@ -600,16 +680,17 @@ export function TemplateEditorForm({
                     onChange={({ html, contentJson }) => {
                       setLiveBuilderHtml(html);
                       form.setValue("editorJson", contentJson, { shouldDirty: true });
-                      if (!/data-maily-component\s*=/i.test(html)) {
-                        form.setValue("htmlContent", html, {
-                          shouldDirty: true
-                        });
-                      }
+                      form.setValue("htmlContent", html, {
+                        shouldDirty: true
+                      });
                     }}
                     value={builderSeed.html}
                   />
-                </Tab>
-                <Tab key="raw" title="Raw HTML">
+                </div>
+                <div
+                  aria-hidden={htmlEditMode !== "raw"}
+                  className={htmlEditMode === "raw" ? "block" : "hidden"}
+                >
                   <Textarea
                     {...form.register("htmlContent")}
                     classNames={{
@@ -619,8 +700,8 @@ export function TemplateEditorForm({
                     label="Raw HTML"
                     minRows={18}
                   />
-                </Tab>
-              </Tabs>
+                </div>
+              </div>
             </Tab>
             <Tab key="text" title="Plain Text">
               <div className="space-y-3">

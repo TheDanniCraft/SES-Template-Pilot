@@ -29,8 +29,8 @@ import {
   text,
   type BlockGroupItem
 } from "@maily-to/core/blocks";
-import { render } from "@maily-to/render";
 import type { BrandKit } from "@/lib/brand-kits";
+import { renderEditorJsonToHtml } from "@/lib/maily-render";
 
 type MailyEditorProps = {
   value: string;
@@ -142,14 +142,89 @@ function applyBrandDefaultsToSingleNode(
   return nextNode;
 }
 
+function normalizeButtonAttrs(input: unknown) {
+  const source =
+    input && typeof input === "object" && !Array.isArray(input)
+      ? (input as Record<string, unknown>)
+      : {};
+
+  return {
+    buttonColor:
+      typeof source.buttonColor === "string"
+        ? source.buttonColor
+        : typeof source.buttoncolor === "string"
+          ? source.buttoncolor
+          : "",
+    textColor:
+      typeof source.textColor === "string"
+        ? source.textColor
+        : typeof source.textcolor === "string"
+          ? source.textcolor
+          : ""
+  };
+}
+
+function isDefaultButtonColor(value: string) {
+  const normalized = value.trim().toLowerCase();
+  return !normalized || normalized === "#000000";
+}
+
+function isDefaultButtonTextColor(value: string) {
+  const normalized = value.trim().toLowerCase();
+  return !normalized || normalized === "#ffffff";
+}
+
+function mergeButtonAttrsFromPreviousNode(
+  currentNode: Record<string, unknown>,
+  previousNode: Record<string, unknown> | undefined
+) {
+  if (!previousNode || currentNode.type !== "button" || previousNode.type !== "button") {
+    return currentNode;
+  }
+
+  const currentAttrs =
+    currentNode.attrs && typeof currentNode.attrs === "object" && !Array.isArray(currentNode.attrs)
+      ? { ...(currentNode.attrs as Record<string, unknown>) }
+      : {};
+  const previousAttrs = normalizeButtonAttrs(previousNode.attrs);
+  const current = normalizeButtonAttrs(currentAttrs);
+  let changed = false;
+
+  if (
+    isDefaultButtonColor(current.buttonColor) &&
+    !isDefaultButtonColor(previousAttrs.buttonColor)
+  ) {
+    currentAttrs.buttonColor = previousAttrs.buttonColor;
+    changed = true;
+  }
+
+  if (
+    isDefaultButtonTextColor(current.textColor) &&
+    !isDefaultButtonTextColor(previousAttrs.textColor)
+  ) {
+    currentAttrs.textColor = previousAttrs.textColor;
+    changed = true;
+  }
+
+  if (!changed) {
+    return currentNode;
+  }
+
+  return {
+    ...currentNode,
+    attrs: currentAttrs
+  };
+}
+
 function applyBrandKitDefaultsToNewNodes(
   currentNode: Record<string, unknown>,
   previousNode: Record<string, unknown> | undefined,
   brandKit: BrandKit
 ): Record<string, unknown> {
+  const withPreservedAttrs = mergeButtonAttrsFromPreviousNode(currentNode, previousNode);
   const appliedCurrent = previousNode
-    ? { ...currentNode }
-    : applyBrandDefaultsToSingleNode(currentNode, brandKit);
+    ? { ...withPreservedAttrs }
+    : applyBrandDefaultsToSingleNode(withPreservedAttrs, brandKit);
 
   if (!Array.isArray(currentNode.content)) {
     return appliedCurrent;
@@ -212,18 +287,6 @@ function hasMailyMarkerHtml(input: string) {
   return /data-maily-component\s*=/i.test(input);
 }
 
-function toJsonSignature(input: unknown) {
-  if (!input) {
-    return "";
-  }
-
-  try {
-    return JSON.stringify(input);
-  } catch {
-    return "";
-  }
-}
-
 type LinkCardAttrs = {
   mailyComponent: string;
   title: string;
@@ -233,6 +296,16 @@ type LinkCardAttrs = {
   image: string;
   subTitle: string;
   badgeText: string;
+};
+
+type ButtonHtmlAttrs = {
+  buttonColor: string;
+  textColor: string;
+};
+
+type MediaHtmlAttrs = {
+  src: string;
+  alt: string;
 };
 
 const LINK_CARD_ATTR_DEFAULTS: LinkCardAttrs = {
@@ -285,6 +358,47 @@ function extractLinkCardAttrsFromRawHtml(rawHtml: string) {
   );
 }
 
+function extractButtonAttrsFromRawHtml(rawHtml: string) {
+  const tags =
+    rawHtml.match(
+      /<div\b[^>]*data-type\s*=\s*("button"|'button')[^>]*>/gi
+    ) ?? [];
+
+  return tags.map(
+    (tag): ButtonHtmlAttrs => ({
+      buttonColor: pickHtmlAttr(tag, "buttoncolor") || pickHtmlAttr(tag, "buttonColor"),
+      textColor: pickHtmlAttr(tag, "textcolor") || pickHtmlAttr(tag, "textColor")
+    })
+  );
+}
+
+function extractLogoAttrsFromRawHtml(rawHtml: string) {
+  const tags =
+    rawHtml.match(
+      /<img\b[^>]*data-maily-component\s*=\s*("logo"|'logo')[^>]*>/gi
+    ) ?? [];
+
+  return tags.map(
+    (tag): MediaHtmlAttrs => ({
+      src: pickHtmlAttr(tag, "src"),
+      alt: pickHtmlAttr(tag, "alt")
+    })
+  );
+}
+
+function extractImageAttrsFromRawHtml(rawHtml: string) {
+  const tags = rawHtml.match(/<img\b[^>]*>/gi) ?? [];
+
+  return tags
+    .filter((tag) => !/data-maily-component\s*=\s*("logo"|'logo')/i.test(tag))
+    .map(
+      (tag): MediaHtmlAttrs => ({
+        src: pickHtmlAttr(tag, "src"),
+        alt: pickHtmlAttr(tag, "alt")
+      })
+    );
+}
+
 function normalizeLinkCardAttrs(input: unknown): LinkCardAttrs {
   const source =
     input && typeof input === "object" && !Array.isArray(input)
@@ -335,6 +449,101 @@ function normalizeLinkCardAttrs(input: unknown): LinkCardAttrs {
           ? source.badgetext
           : LINK_CARD_ATTR_DEFAULTS.badgeText
   };
+}
+
+function hydrateButtonAttrsFromRawHtml(
+  node: Record<string, unknown>,
+  htmlAttrs: ButtonHtmlAttrs[],
+  cursor: { index: number }
+): Record<string, unknown> {
+  const next: Record<string, unknown> = { ...node };
+
+  if (node.type === "button") {
+    const current = normalizeButtonAttrs(node.attrs);
+    const fromHtml = htmlAttrs[cursor.index];
+    cursor.index += 1;
+
+    const attrs =
+      node.attrs && typeof node.attrs === "object" && !Array.isArray(node.attrs)
+        ? { ...(node.attrs as Record<string, unknown>) }
+        : {};
+
+    if (fromHtml) {
+      if (isDefaultButtonColor(current.buttonColor) && fromHtml.buttonColor.trim()) {
+        attrs.buttonColor = fromHtml.buttonColor.trim();
+      }
+      if (isDefaultButtonTextColor(current.textColor) && fromHtml.textColor.trim()) {
+        attrs.textColor = fromHtml.textColor.trim();
+      }
+    }
+
+    next.attrs = attrs;
+  }
+
+  if (Array.isArray(node.content)) {
+    next.content = (node.content as Array<unknown>).map((entry) => {
+      if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+        return entry as unknown;
+      }
+      return hydrateButtonAttrsFromRawHtml(
+        entry as Record<string, unknown>,
+        htmlAttrs,
+        cursor
+      );
+    });
+  }
+
+  return next;
+}
+
+function hydrateMediaAttrsFromRawHtml(
+  node: Record<string, unknown>,
+  logoAttrs: MediaHtmlAttrs[],
+  imageAttrs: MediaHtmlAttrs[],
+  cursor: { logoIndex: number; imageIndex: number }
+): Record<string, unknown> {
+  const next: Record<string, unknown> = { ...node };
+  const type = typeof node.type === "string" ? node.type : "";
+
+  if (type === "logo" || type === "image") {
+    const attrs =
+      node.attrs && typeof node.attrs === "object" && !Array.isArray(node.attrs)
+        ? { ...(node.attrs as Record<string, unknown>) }
+        : {};
+    const currentSrc = typeof attrs.src === "string" ? attrs.src.trim() : "";
+    const currentAlt = typeof attrs.alt === "string" ? attrs.alt.trim() : "";
+    const fromHtml =
+      type === "logo"
+        ? logoAttrs[cursor.logoIndex++]
+        : imageAttrs[cursor.imageIndex++];
+
+    if (fromHtml) {
+      if (!currentSrc && fromHtml.src.trim()) {
+        attrs.src = fromHtml.src.trim();
+      }
+      if (!currentAlt && fromHtml.alt.trim()) {
+        attrs.alt = fromHtml.alt.trim();
+      }
+    }
+
+    next.attrs = attrs;
+  }
+
+  if (Array.isArray(node.content)) {
+    next.content = (node.content as Array<unknown>).map((entry) => {
+      if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+        return entry as unknown;
+      }
+      return hydrateMediaAttrsFromRawHtml(
+        entry as Record<string, unknown>,
+        logoAttrs,
+        imageAttrs,
+        cursor
+      );
+    });
+  }
+
+  return next;
 }
 
 function isEmptyLinkCardAttrs(attrs: LinkCardAttrs) {
@@ -483,8 +692,25 @@ export const MailyEditor = forwardRef<MailyEditorHandle, MailyEditorProps>(funct
   const blocks = useMemo(() => createBlocks(brandKit), [brandKit]);
   const editorRef = useRef<any>(null);
   const onChangeRef = useRef(onChange);
+  const hydratedContentJson = useMemo(() => {
+    if (!contentJson || Object.keys(contentJson).length === 0) {
+      return undefined;
+    }
+
+    const sourceHtml = (value || "").trim();
+    if (!sourceHtml) {
+      return contentJson;
+    }
+
+    return hydrateMediaAttrsFromRawHtml(
+      contentJson,
+      extractLogoAttrsFromRawHtml(sourceHtml),
+      extractImageAttrsFromRawHtml(sourceHtml),
+      { logoIndex: 0, imageIndex: 0 }
+    );
+  }, [contentJson, value]);
   const lastEditorContentRef = useRef<Record<string, unknown> | undefined>(
-    contentJson && Object.keys(contentJson).length > 0 ? contentJson : undefined
+    hydratedContentJson
   );
   const editorKey = `${surfaceTheme}:${brandKit?.id ?? "no-kit"}:${refreshToken}`;
 
@@ -492,7 +718,8 @@ export const MailyEditor = forwardRef<MailyEditorHandle, MailyEditorProps>(funct
   const lastEmittedHtmlRef = useRef(
     initialHtml && !hasMailyMarkerHtml(initialHtml) ? initialHtml : ""
   );
-  const latestRenderSignatureRef = useRef("");
+  const renderRequestCounterRef = useRef(0);
+  const appliedRenderCounterRef = useRef(0);
   const isMountedRef = useRef(true);
 
   useEffect(() => {
@@ -508,8 +735,10 @@ export const MailyEditor = forwardRef<MailyEditorHandle, MailyEditorProps>(funct
 
   useEffect(() => {
     lastEditorContentRef.current =
-      contentJson && Object.keys(contentJson).length > 0 ? contentJson : undefined;
-  }, [contentJson, refreshToken]);
+      hydratedContentJson && Object.keys(hydratedContentJson).length > 0
+        ? hydratedContentJson
+        : undefined;
+  }, [hydratedContentJson, refreshToken]);
 
   useEffect(() => {
     return () => {
@@ -537,10 +766,35 @@ export const MailyEditor = forwardRef<MailyEditorHandle, MailyEditorProps>(funct
         typeof editorInstance.getHTML === "function" ? editorInstance.getHTML() : "";
 
       if (typeof rawHtml === "string" && hasMailyMarkerHtml(rawHtml)) {
-        return hydrateLinkCardAttrsFromRawHtml(
+        const hydratedLinkCards = hydrateLinkCardAttrsFromRawHtml(
           normalizedJson,
           extractLinkCardAttrsFromRawHtml(rawHtml),
           { index: 0 }
+        );
+        const hydratedButtons = hydrateButtonAttrsFromRawHtml(
+          hydratedLinkCards,
+          extractButtonAttrsFromRawHtml(rawHtml),
+          { index: 0 }
+        );
+        return hydrateMediaAttrsFromRawHtml(
+          hydratedButtons,
+          extractLogoAttrsFromRawHtml(rawHtml),
+          extractImageAttrsFromRawHtml(rawHtml),
+          { logoIndex: 0, imageIndex: 0 }
+        );
+      }
+
+      if (typeof rawHtml === "string") {
+        const hydratedButtons = hydrateButtonAttrsFromRawHtml(
+          normalizedJson,
+          extractButtonAttrsFromRawHtml(rawHtml),
+          { index: 0 }
+        );
+        return hydrateMediaAttrsFromRawHtml(
+          hydratedButtons,
+          extractLogoAttrsFromRawHtml(rawHtml),
+          extractImageAttrsFromRawHtml(rawHtml),
+          { logoIndex: 0, imageIndex: 0 }
         );
       }
 
@@ -551,9 +805,9 @@ export const MailyEditor = forwardRef<MailyEditorHandle, MailyEditorProps>(funct
 
   const renderHtmlFromJson = useCallback(
     async (json: Record<string, unknown>) => {
-      return render(json);
+      return renderEditorJsonToHtml(json, brandKit);
     },
-    []
+    [brandKit]
   );
 
   const emitFromEditor = useCallback(
@@ -567,26 +821,37 @@ export const MailyEditor = forwardRef<MailyEditorHandle, MailyEditorProps>(funct
         return null;
       }
 
-      const signature = toJsonSignature(normalizedJson);
-      latestRenderSignatureRef.current = signature;
+      const requestId = ++renderRequestCounterRef.current;
 
       const immediateHtmlRaw =
         typeof editorInstance.getHTML === "function" ? editorInstance.getHTML() : "";
       const immediateHtml =
         typeof immediateHtmlRaw === "string" ? immediateHtmlRaw : "";
-      if (immediateHtml.trim().length > 0) {
+      const lastKnownHtml =
+        typeof lastEmittedHtmlRef.current === "string"
+          ? lastEmittedHtmlRef.current
+          : "";
+      const fallbackFromProp = typeof value === "string" ? value : "";
+      const previewSafeHtml =
+        lastKnownHtml.trim().length > 0
+          ? lastKnownHtml
+          : fallbackFromProp.trim().length > 0
+            ? fallbackFromProp
+            : immediateHtml;
+      if (previewSafeHtml.trim().length > 0) {
         lastEditorContentRef.current = normalizedJson;
         onChangeRef.current({
-          html: immediateHtml,
+          html: previewSafeHtml,
           contentJson: normalizedJson
         });
       }
 
       try {
         const normalizedHtml = await renderHtmlFromJson(normalizedJson);
-        if (!isMountedRef.current || latestRenderSignatureRef.current !== signature) {
+        if (!isMountedRef.current || requestId < appliedRenderCounterRef.current) {
           return null;
         }
+        appliedRenderCounterRef.current = requestId;
 
         lastEditorContentRef.current = normalizedJson;
         lastEmittedHtmlRef.current = normalizedHtml.trim();
@@ -621,9 +886,13 @@ export const MailyEditor = forwardRef<MailyEditorHandle, MailyEditorProps>(funct
                 ? fallbackFromProp
                 : "";
 
-        if (!isMountedRef.current || latestRenderSignatureRef.current !== signature) {
+        if (!isMountedRef.current) {
           return null;
         }
+        if (requestId < appliedRenderCounterRef.current) {
+          return null;
+        }
+        appliedRenderCounterRef.current = requestId;
 
         lastEditorContentRef.current = normalizedJson;
         lastEmittedHtmlRef.current = safeFallbackHtml.trim();
@@ -689,12 +958,11 @@ export const MailyEditor = forwardRef<MailyEditorHandle, MailyEditorProps>(funct
           : "maily-editor-shell-light border border-slate-300 bg-white"
       }`}
       style={
-        {
-          "--ses-editor-accent": brandKit?.colors.accent ?? "#22d3ee",
-          "--ses-editor-accent-foreground":
-            brandKit?.colors.buttonText ||
-            getContrastButtonTextColor(brandKit?.colors.accent ?? "#22d3ee")
-        } as Record<string, string>
+        brandKit
+          ? ({
+              "--mly-color-yellow-200": brandKit.colors.accent
+            } as React.CSSProperties)
+          : undefined
       }
     >
       <Editor
@@ -710,11 +978,11 @@ export const MailyEditor = forwardRef<MailyEditorHandle, MailyEditorProps>(funct
           wrapClassName: "mly:w-full"
         }}
         contentHtml={
-          contentJson && Object.keys(contentJson).length > 0
+        contentJson && Object.keys(contentJson).length > 0
             ? undefined
             : value || "<p>Hello {{name}}, welcome to {{company}}.</p>"
         }
-        contentJson={contentJson as any}
+        contentJson={hydratedContentJson as any}
         onCreate={handleEditorCreate}
         onUpdate={emitFromEditor}
       />

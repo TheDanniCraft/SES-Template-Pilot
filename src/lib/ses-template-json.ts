@@ -92,12 +92,14 @@ export function attachBrandKitId(
   designJson: Record<string, unknown>,
   brandKitId: string | undefined
 ) {
+  const { [BRAND_KIT_KEY]: _ignored, ...withoutBrandKit } = designJson;
+
   if (!brandKitId?.trim()) {
-    return designJson;
+    return withoutBrandKit;
   }
 
   return {
-    ...designJson,
+    ...withoutBrandKit,
     [BRAND_KIT_KEY]: brandKitId.trim()
   };
 }
