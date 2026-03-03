@@ -1,6 +1,13 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState, useTransition } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  useTransition
+} from "react";
 import { usePathname, useRouter } from "next/navigation";
 import { zodResolver } from "@hookform/resolvers/zod";
 import {
@@ -37,7 +44,6 @@ import {
   type BrandKit,
   getBrandKitById
 } from "@/lib/brand-kits";
-import { toTableEmailHtml } from "@/lib/html-utils";
 import { htmlToPlainText } from "@/lib/plain-text";
 import { renderTemplateVariables } from "@/lib/preview";
 import { normalizeDesignJson } from "@/lib/ses-template-json";
@@ -45,7 +51,7 @@ import {
   templateDraftSchema,
   type TemplateDraftInput
 } from "@/lib/validators";
-import { GrapesEditor } from "@/components/grapes-editor";
+import { MailyEditor, type MailyEditorHandle } from "@/components/maily-editor";
 import { HtmlPreviewFrame } from "@/components/html-preview-frame";
 import { useSaveShortcut } from "@/hooks/use-save-shortcut";
 
@@ -58,6 +64,14 @@ const DEFAULT_PREVIEW_VARIABLES = {
   name: "Alex",
   company: "Acme Labs"
 };
+const NO_BRAND_KIT_KEY = "__none__";
+
+function toEditorJson(input: unknown): Record<string, unknown> | undefined {
+  if (!input || typeof input !== "object" || Array.isArray(input)) {
+    return undefined;
+  }
+  return input as Record<string, unknown>;
+}
 
 function extractTemplateVariableKeys(...sources: Array<string | undefined>) {
   const keys = new Set<string>();
@@ -79,6 +93,57 @@ function extractTemplateVariableKeys(...sources: Array<string | undefined>) {
   return Array.from(keys).sort((a, b) => a.localeCompare(b));
 }
 
+function resetAppliedBrandKitValues(
+  node: Record<string, unknown>,
+  brandKit: BrandKit
+): Record<string, unknown> {
+  const nextNode: Record<string, unknown> = { ...node };
+  const type = typeof node.type === "string" ? node.type : "";
+  const attrs =
+    node.attrs && typeof node.attrs === "object" && !Array.isArray(node.attrs)
+      ? { ...(node.attrs as Record<string, unknown>) }
+      : undefined;
+
+  if (attrs) {
+    if (type === "button") {
+      if (attrs.buttonColor === brandKit.colors.accent) {
+        delete attrs.buttonColor;
+      }
+      if (attrs.textColor === brandKit.colors.buttonText) {
+        delete attrs.textColor;
+      }
+    }
+
+    if (type === "section") {
+      if (attrs.backgroundColor === brandKit.colors.surface) {
+        delete attrs.backgroundColor;
+      }
+      if (attrs.borderColor === brandKit.colors.border) {
+        delete attrs.borderColor;
+      }
+    }
+
+    if (type === "logo") {
+      if (attrs.src === brandKit.iconUrl) {
+        attrs.src = "";
+      }
+      if (attrs.alt === `${brandKit.name} logo`) {
+        attrs.alt = "Brand logo";
+      }
+    }
+
+    nextNode.attrs = attrs;
+  }
+
+  if (Array.isArray(node.content)) {
+    nextNode.content = (node.content as Array<Record<string, unknown>>).map((child) =>
+      resetAppliedBrandKitValues(child, brandKit)
+    );
+  }
+
+  return nextNode;
+}
+
 export function TemplateEditorForm({
   initialValues,
   brandKits
@@ -89,8 +154,15 @@ export function TemplateEditorForm({
   const [editorMode, setEditorMode] = useState<"html" | "text">("html");
   const [previewMode, setPreviewMode] = useState<"html" | "text">("html");
   const [htmlEditMode, setHtmlEditMode] = useState<"builder" | "raw">("builder");
-  const [editorTheme, setEditorTheme] = useState<"dark" | "light">("dark");
+  const [previewTheme, setPreviewTheme] = useState<"dark" | "light">("dark");
   const [autoPlainText, setAutoPlainText] = useState(true);
+  const [editorRefreshToken, setEditorRefreshToken] = useState(0);
+  const [builderSeed, setBuilderSeed] = useState(() => ({
+    html: initialValues.htmlContent ?? "",
+    contentJson: toEditorJson(initialValues.editorJson)
+  }));
+  const [liveBuilderHtml, setLiveBuilderHtml] = useState(builderSeed.html);
+  const mailyEditorRef = useRef<MailyEditorHandle | null>(null);
 
   const form = useForm<TemplateDraftInput>({
     resolver: zodResolver(templateDraftSchema),
@@ -99,6 +171,14 @@ export function TemplateEditorForm({
       previewVariables: initialValues.previewVariables ?? DEFAULT_PREVIEW_VARIABLES
     }
   });
+
+  // Keep non-visible editor fields registered (tabs unmount inactive panels).
+  useEffect(() => {
+    form.register("htmlContent");
+    form.register("textContent");
+    form.register("editorJson");
+    form.register("designJson");
+  }, [form]);
 
   const values = useWatch({
     control: form.control
@@ -122,6 +202,13 @@ export function TemplateEditorForm({
   const selectedBrandKit = useMemo(
     () => getBrandKitById(brandKits, values.brandKitId),
     [brandKits, values.brandKitId]
+  );
+  const brandKitOptions = useMemo(
+    () => [
+      { id: NO_BRAND_KIT_KEY, name: "No Brand Kit" },
+      ...brandKits.map((kit) => ({ id: kit.id, name: kit.name }))
+    ],
+    [brandKits]
   );
 
   useEffect(() => {
@@ -176,9 +263,11 @@ export function TemplateEditorForm({
     }
   }, [autoPlainText, form, values.htmlContent, values.textContent]);
 
+  const previewSourceHtml =
+    htmlEditMode === "builder" ? liveBuilderHtml : (values.htmlContent ?? "");
   const previewHtml = useMemo(() => {
-    return renderTemplateVariables(values.htmlContent ?? "", previewVariables);
-  }, [previewVariables, values.htmlContent]);
+    return renderTemplateVariables(previewSourceHtml, previewVariables);
+  }, [previewSourceHtml, previewVariables]);
 
   const previewText = useMemo(() => {
     return renderTemplateVariables(values.textContent ?? "", previewVariables);
@@ -227,7 +316,18 @@ export function TemplateEditorForm({
     const currentDraftId = form.getValues("id");
 
     startTransition(async () => {
-      const result = await saveTemplateDraftAction(form.getValues());
+      const payload = form.getValues();
+      if (htmlEditMode === "builder") {
+        const snapshot = await mailyEditorRef.current?.flush();
+        if (!snapshot) {
+          toast.error("Failed to compile template HTML. Please try again.");
+          return;
+        }
+        payload.htmlContent = snapshot.html;
+        payload.editorJson = snapshot.contentJson;
+      }
+
+      const result = await saveTemplateDraftAction(payload);
       if (!result.success) {
         toast.error(result.error);
         return;
@@ -243,7 +343,7 @@ export function TemplateEditorForm({
 
       router.refresh();
     });
-  }, [canSaveLocal, form, router, startTransition]);
+  }, [canSaveLocal, form, htmlEditMode, router, startTransition]);
 
   useSaveShortcut(onSaveLocal, !isPending);
 
@@ -254,17 +354,31 @@ export function TemplateEditorForm({
     }
 
     startTransition(async () => {
+      const payload = form.getValues();
+      if (htmlEditMode === "builder") {
+        const snapshot = await mailyEditorRef.current?.flush();
+        if (!snapshot) {
+          toast.error("Failed to compile template HTML. Please try again.");
+          return;
+        }
+        payload.htmlContent = snapshot.html;
+        payload.editorJson = snapshot.contentJson;
+      }
+
       const result = await syncTemplateToSesAction({
-        sesTemplateName: form.getValues("sesTemplateName"),
-        subject: form.getValues("subject"),
-        htmlContent: form.getValues("htmlContent"),
-        textContent: form.getValues("textContent")
+        sesTemplateName: payload.sesTemplateName,
+        subject: payload.subject,
+        htmlContent: payload.htmlContent,
+        textContent: payload.textContent
       });
       if (!result.success) {
         toast.error(result.error);
         return;
       }
       toast.success("Template synced to SES");
+
+      // Keep local draft in sync with latest builder snapshot after SES sync.
+      await saveTemplateDraftAction(payload);
       router.refresh();
     });
   };
@@ -275,8 +389,15 @@ export function TemplateEditorForm({
       toast.error("Select a brand kit first");
       return;
     }
+    const nextHtml = form.getValues("htmlContent") ?? "";
+    setBuilderSeed({
+      html: nextHtml,
+      contentJson: toEditorJson(form.getValues("editorJson"))
+    });
+    setLiveBuilderHtml(nextHtml);
+    setEditorRefreshToken((current) => current + 1);
     toast.success(
-      `${selected.name} defaults are active for new builder blocks. Existing content was not changed.`
+      `${selected.name} defaults are active for new builder blocks.`
     );
   };
 
@@ -307,6 +428,13 @@ export function TemplateEditorForm({
 
       if (result.template) {
         form.reset(result.template);
+        const nextSeed = {
+          html: result.template.htmlContent ?? "",
+          contentJson: toEditorJson(result.template.editorJson)
+        };
+        setBuilderSeed(nextSeed);
+        setLiveBuilderHtml(nextSeed.html);
+        setEditorRefreshToken((current) => current + 1);
       }
 
       toast.success("Draft reset from SES");
@@ -354,9 +482,10 @@ export function TemplateEditorForm({
   };
 
   return (
-    <form
+    <div
       className="grid gap-4 2xl:grid-cols-[minmax(0,1.45fr)_minmax(420px,1fr)]"
-      onSubmit={(event) => event.preventDefault()}
+      role="group"
+      aria-label="Template editor form"
     >
       <Card className="panel">
         <CardHeader className="flex flex-col gap-3">
@@ -385,14 +514,43 @@ export function TemplateEditorForm({
                 <Select
                   label="Brand Kit"
                   placeholder="Select a brand kit"
-                  selectedKeys={field.value ? new Set([field.value]) : new Set()}
+                  selectedKeys={
+                    field.value
+                      ? new Set([field.value])
+                      : new Set([NO_BRAND_KIT_KEY])
+                  }
                   onSelectionChange={(keys) => {
                     const selected = Array.from(keys)[0];
-                    field.onChange(selected ? String(selected) : undefined);
+                    const previousKit = getBrandKitById(brandKits, field.value);
+                    const selectedValue = selected ? String(selected) : NO_BRAND_KIT_KEY;
+
+                    if (selectedValue === NO_BRAND_KIT_KEY) {
+                      field.onChange(undefined);
+
+                      const currentEditorJson = toEditorJson(form.getValues("editorJson"));
+                      if (previousKit && currentEditorJson) {
+                        const resetContent = resetAppliedBrandKitValues(
+                          currentEditorJson,
+                          previousKit
+                        );
+                        form.setValue("editorJson", resetContent, {
+                          shouldDirty: true
+                        });
+                        setBuilderSeed({
+                          html: form.getValues("htmlContent") ?? "",
+                          contentJson: resetContent
+                        });
+                        setLiveBuilderHtml(form.getValues("htmlContent") ?? "");
+                        setEditorRefreshToken((current) => current + 1);
+                      }
+                      return;
+                    }
+
+                    field.onChange(selectedValue);
                   }}
                 >
-                  {brandKits.map((kit) => (
-                    <SelectItem key={kit.id}>{kit.name}</SelectItem>
+                  {brandKitOptions.map((option) => (
+                    <SelectItem key={option.id}>{option.name}</SelectItem>
                   ))}
                 </Select>
               )}
@@ -407,28 +565,6 @@ export function TemplateEditorForm({
               Use Kit Defaults
             </Button>
           </div>
-          <div className="flex items-center justify-end gap-2">
-            <Button
-              color={editorTheme === "dark" ? "primary" : "default"}
-              onPress={() => setEditorTheme("dark")}
-              size="sm"
-              startContent={<Moon className="h-3.5 w-3.5" />}
-              type="button"
-              variant="flat"
-            >
-              Dark Editor
-            </Button>
-            <Button
-              color={editorTheme === "light" ? "primary" : "default"}
-              onPress={() => setEditorTheme("light")}
-              size="sm"
-              startContent={<Sun className="h-3.5 w-3.5" />}
-              type="button"
-              variant="flat"
-            >
-              Light Editor
-            </Button>
-          </div>
         </CardHeader>
         <CardBody className="space-y-4">
           <Tabs
@@ -440,20 +576,37 @@ export function TemplateEditorForm({
               <Tabs
                 aria-label="HTML edit mode"
                 selectedKey={htmlEditMode}
-                onSelectionChange={(key) =>
-                  setHtmlEditMode(key as "builder" | "raw")
-                }
+                onSelectionChange={(key) => {
+                  const nextMode = key as "builder" | "raw";
+                  setHtmlEditMode(nextMode);
+                  if (nextMode === "builder") {
+                    const nextHtml = form.getValues("htmlContent") ?? "";
+                    setBuilderSeed({
+                      html: nextHtml,
+                      contentJson: toEditorJson(form.getValues("editorJson"))
+                    });
+                    setLiveBuilderHtml(nextHtml);
+                    setEditorRefreshToken((current) => current + 1);
+                  }
+                }}
               >
                 <Tab key="builder" title="Builder">
-                  <GrapesEditor
+                  <MailyEditor
+                    ref={mailyEditorRef}
+                    contentJson={builderSeed.contentJson}
                     brandKit={selectedBrandKit}
-                    onChange={(html) =>
-                      form.setValue("htmlContent", toTableEmailHtml(html), {
-                        shouldDirty: true
-                      })
-                    }
-                    theme={editorTheme}
-                    value={values.htmlContent ?? ""}
+                    refreshToken={editorRefreshToken}
+                    surfaceTheme="light"
+                    onChange={({ html, contentJson }) => {
+                      setLiveBuilderHtml(html);
+                      form.setValue("editorJson", contentJson, { shouldDirty: true });
+                      if (!/data-maily-component\s*=/i.test(html)) {
+                        form.setValue("htmlContent", html, {
+                          shouldDirty: true
+                        });
+                      }
+                    }}
+                    value={builderSeed.html}
                   />
                 </Tab>
                 <Tab key="raw" title="Raw HTML">
@@ -557,10 +710,10 @@ export function TemplateEditorForm({
         </CardBody>
       </Card>
 
-      <Card className="panel">
+      <Card className="panel min-w-0">
         <CardHeader className="flex items-center justify-between gap-3">
           <p className="font-semibold">Live Preview</p>
-          <p className="text-xs text-slate-400">Surface: {editorTheme}</p>
+          <p className="text-xs text-slate-400">Mode: {previewTheme}</p>
         </CardHeader>
         <CardBody className="space-y-3">
           <div className="rounded-xl border border-white/15 bg-black/25 p-3 text-xs text-slate-300">
@@ -598,36 +751,66 @@ export function TemplateEditorForm({
 
           </div>
 
-          <Tabs
-            aria-label="Preview mode"
-            selectedKey={previewMode}
-            onSelectionChange={(key) => setPreviewMode(key as "html" | "text")}
-          >
-            <Tab key="html" title="HTML Preview">
-              <HtmlPreviewFrame
-                className={`min-h-[360px] w-full rounded-xl ${
-                  editorTheme === "dark"
-                    ? "border border-white/15 bg-slate-950"
-                    : "border border-slate-300 bg-white"
-                }`}
-                html={previewHtml}
-                theme={editorTheme}
-              />
-            </Tab>
-            <Tab key="text" title="Text Preview">
-              <pre
-                className={`min-h-[340px] whitespace-pre-wrap rounded-xl p-4 text-sm ${
-                  editorTheme === "dark"
-                    ? "border border-white/15 bg-slate-950/70 text-slate-200"
-                    : "border border-slate-300 bg-slate-50 text-slate-700"
-                }`}
+          <div className="space-y-2">
+            <Tabs
+              className="w-full"
+              fullWidth
+              aria-label="Preview mode"
+              selectedKey={previewMode}
+              onSelectionChange={(key) => setPreviewMode(key as "html" | "text")}
+            >
+              <Tab key="html" title="HTML Preview" />
+              <Tab key="text" title="Text Preview" />
+            </Tabs>
+            <div className="grid w-full gap-2 sm:grid-cols-2">
+              <Button
+                className="w-full"
+                color={previewTheme === "dark" ? "primary" : "default"}
+                onPress={() => setPreviewTheme("dark")}
+                size="sm"
+                startContent={<Moon className="h-3.5 w-3.5" />}
+                type="button"
+                variant="flat"
               >
-                {previewText}
-              </pre>
-            </Tab>
-          </Tabs>
+                Dark Preview
+              </Button>
+              <Button
+                className="w-full"
+                color={previewTheme === "light" ? "primary" : "default"}
+                onPress={() => setPreviewTheme("light")}
+                size="sm"
+                startContent={<Sun className="h-3.5 w-3.5" />}
+                type="button"
+                variant="flat"
+              >
+                Light Preview
+              </Button>
+            </div>
+          </div>
+
+          {previewMode === "html" ? (
+            <HtmlPreviewFrame
+              className={`min-h-[360px] w-full rounded-xl ${
+                previewTheme === "dark"
+                  ? "border border-white/15 bg-slate-950"
+                  : "border border-slate-300 bg-white"
+              } min-w-0`}
+              html={previewHtml}
+              theme={previewTheme}
+            />
+          ) : (
+            <pre
+              className={`min-h-[340px] whitespace-pre-wrap rounded-xl p-4 text-sm ${
+                previewTheme === "dark"
+                  ? "border border-white/15 bg-slate-950/70 text-slate-200"
+                  : "border border-slate-300 bg-slate-50 text-slate-700"
+              }`}
+            >
+              {previewText}
+            </pre>
+          )}
         </CardBody>
       </Card>
-    </form>
+    </div>
   );
 }

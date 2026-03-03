@@ -13,6 +13,7 @@ export const templateDraftSchema = z.object({
   subject: z.string().min(2, "Subject is required"),
   htmlContent: z.string().min(2, "HTML is required"),
   textContent: z.string().min(2, "Plain text is required"),
+  editorJson: z.record(z.string(), z.unknown()).optional(),
   brandKitId: z.string().optional(),
   designJson: z.record(z.string(), z.unknown()).optional(),
   previewVariables: z.record(z.string(), z.string()).optional()

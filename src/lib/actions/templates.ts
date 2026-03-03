@@ -26,6 +26,196 @@ import {
   type TemplateDraftInput
 } from "@/lib/validators";
 
+const LINK_CARD_DEFAULT_ATTRS = {
+  mailyComponent: "linkCard",
+  title: "",
+  description: "",
+  link: "",
+  linkTitle: "",
+  image: "",
+  subTitle: "",
+  badgeText: ""
+} as const;
+
+function normalizeLinkCardAttrs(input: unknown) {
+  const source =
+    input && typeof input === "object" && !Array.isArray(input)
+      ? (input as Record<string, unknown>)
+      : {};
+
+  return {
+    ...source,
+    mailyComponent:
+      typeof source.mailyComponent === "string"
+        ? source.mailyComponent
+        : typeof source.mailycomponent === "string"
+          ? source.mailycomponent
+        : LINK_CARD_DEFAULT_ATTRS.mailyComponent,
+    title: typeof source.title === "string" ? source.title : LINK_CARD_DEFAULT_ATTRS.title,
+    description:
+      typeof source.description === "string"
+        ? source.description
+        : LINK_CARD_DEFAULT_ATTRS.description,
+    link:
+      typeof source.link === "string"
+        ? source.link
+        : typeof source.href === "string"
+          ? source.href
+          : LINK_CARD_DEFAULT_ATTRS.link,
+    linkTitle:
+      typeof source.linkTitle === "string"
+        ? source.linkTitle
+        : typeof source.linktitle === "string"
+          ? source.linktitle
+        : LINK_CARD_DEFAULT_ATTRS.linkTitle,
+    image:
+      typeof source.image === "string"
+        ? source.image
+        : typeof source.src === "string"
+          ? source.src
+          : LINK_CARD_DEFAULT_ATTRS.image,
+    subTitle:
+      typeof source.subTitle === "string"
+        ? source.subTitle
+        : typeof source.subtitle === "string"
+          ? source.subtitle
+        : LINK_CARD_DEFAULT_ATTRS.subTitle,
+    badgeText:
+      typeof source.badgeText === "string"
+        ? source.badgeText
+        : typeof source.badgetext === "string"
+          ? source.badgetext
+        : LINK_CARD_DEFAULT_ATTRS.badgeText
+  };
+}
+
+function normalizeEditorJsonNode(node: unknown): unknown {
+  if (Array.isArray(node)) {
+    return node.map((entry) => normalizeEditorJsonNode(entry));
+  }
+
+  if (!node || typeof node !== "object") {
+    return node;
+  }
+
+  const record = node as Record<string, unknown>;
+  const next: Record<string, unknown> = { ...record };
+
+  if (record.type === "linkCard") {
+    next.attrs = normalizeLinkCardAttrs(record.attrs);
+  }
+
+  if (Array.isArray(record.content)) {
+    next.content = record.content.map((entry) => normalizeEditorJsonNode(entry));
+  }
+
+  return next;
+}
+
+function decodeHtmlAttribute(value: string) {
+  return value
+    .replace(/&quot;/g, "\"")
+    .replace(/&#39;/g, "'")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&amp;/g, "&");
+}
+
+function pickHtmlAttr(tag: string, name: string) {
+  const pattern = new RegExp(`${name}\\s*=\\s*("([^"]*)"|'([^']*)')`, "i");
+  const match = tag.match(pattern);
+  const raw = match?.[2] ?? match?.[3];
+  return typeof raw === "string" ? decodeHtmlAttribute(raw) : "";
+}
+
+function extractLinkCardAttrsFromHtml(html: string) {
+  const tags = html.match(
+    /<(?:a|div)\b[^>]*data-maily-component\s*=\s*("linkCard"|'linkCard')[^>]*>/gi
+  ) ?? [];
+
+  return tags.map((tag) => ({
+    mailyComponent:
+      pickHtmlAttr(tag, "mailycomponent") ||
+      pickHtmlAttr(tag, "mailyComponent") ||
+      LINK_CARD_DEFAULT_ATTRS.mailyComponent,
+    title: pickHtmlAttr(tag, "title"),
+    description: pickHtmlAttr(tag, "description"),
+    link: pickHtmlAttr(tag, "link"),
+    linkTitle: pickHtmlAttr(tag, "linktitle") || pickHtmlAttr(tag, "linkTitle"),
+    image: pickHtmlAttr(tag, "image"),
+    subTitle: pickHtmlAttr(tag, "subtitle") || pickHtmlAttr(tag, "subTitle"),
+    badgeText: pickHtmlAttr(tag, "badgetext") || pickHtmlAttr(tag, "badgeText")
+  }));
+}
+
+function hydrateLinkCardAttrsFromHtml(
+  node: unknown,
+  linkCards: Array<ReturnType<typeof normalizeLinkCardAttrs>>,
+  cursor: { index: number }
+): unknown {
+  if (Array.isArray(node)) {
+    return node.map((entry) => hydrateLinkCardAttrsFromHtml(entry, linkCards, cursor));
+  }
+
+  if (!node || typeof node !== "object") {
+    return node;
+  }
+
+  const record = node as Record<string, unknown>;
+  const next: Record<string, unknown> = { ...record };
+
+  if (record.type === "linkCard") {
+    const current = normalizeLinkCardAttrs(record.attrs);
+    const fromHtml = linkCards[cursor.index];
+    cursor.index += 1;
+    if (fromHtml) {
+      current.mailyComponent = fromHtml.mailyComponent || current.mailyComponent;
+      current.title = current.title || fromHtml.title;
+      current.description = current.description || fromHtml.description;
+      current.link = current.link || fromHtml.link;
+      current.linkTitle = current.linkTitle || fromHtml.linkTitle;
+      current.image = current.image || fromHtml.image;
+      current.subTitle = current.subTitle || fromHtml.subTitle;
+      current.badgeText = current.badgeText || fromHtml.badgeText;
+    }
+    next.attrs = current;
+  }
+
+  if (Array.isArray(record.content)) {
+    next.content = record.content.map((entry) =>
+      hydrateLinkCardAttrsFromHtml(entry, linkCards, cursor)
+    );
+  }
+
+  return next;
+}
+
+function normalizeEditorJsonForStorage(
+  editorJson: Record<string, unknown> | undefined,
+  htmlContent: string
+) {
+  if (!editorJson || typeof editorJson !== "object" || Array.isArray(editorJson)) {
+    return undefined;
+  }
+
+  const normalizedNode = normalizeEditorJsonNode(editorJson);
+  if (!normalizedNode || typeof normalizedNode !== "object" || Array.isArray(normalizedNode)) {
+    return undefined;
+  }
+
+  const htmlLinkCards = extractLinkCardAttrsFromHtml(htmlContent);
+  const hydratedNode =
+    htmlLinkCards.length > 0
+      ? hydrateLinkCardAttrsFromHtml(normalizedNode, htmlLinkCards, { index: 0 })
+      : normalizedNode;
+
+  if (!hydratedNode || typeof hydratedNode !== "object" || Array.isArray(hydratedNode)) {
+    return undefined;
+  }
+
+  return hydratedNode as Record<string, unknown>;
+}
+
 function isUuid(value: string) {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
     value
@@ -214,6 +404,10 @@ export async function saveTemplateDraftAction(input: TemplateDraftInput) {
   }
 
   const payload = parsed.data;
+  const normalizedEditorJson = normalizeEditorJsonForStorage(
+    payload.editorJson,
+    payload.htmlContent
+  );
   const normalizedDesignJson = attachBrandKitId(
     attachPreviewVariables(
       normalizeDesignJson(payload.designJson, {
@@ -236,6 +430,7 @@ export async function saveTemplateDraftAction(input: TemplateDraftInput) {
         subject: payload.subject,
         htmlContent: payload.htmlContent,
         textContent: payload.textContent,
+        editorJson: normalizedEditorJson,
         designJson: normalizedDesignJson,
         updatedAt: nowSql
       })
@@ -257,6 +452,7 @@ export async function saveTemplateDraftAction(input: TemplateDraftInput) {
       subject: payload.subject,
       htmlContent: payload.htmlContent,
       textContent: payload.textContent,
+      editorJson: normalizedEditorJson,
       designJson: normalizedDesignJson
     })
     .returning({ id: templateDrafts.id });
@@ -488,6 +684,7 @@ export async function resetTemplateDraftFromSesAction(
       subject: sesTemplate.SubjectPart ?? "",
       htmlContent: sesTemplate.HtmlPart ?? "",
       textContent: sesTemplate.TextPart ?? "",
+      editorJson: undefined,
       designJson: attachBrandKitId(
         attachPreviewVariables(
           normalizeDesignJson(existingDraft?.designJson ?? undefined, {
@@ -521,6 +718,7 @@ export async function resetTemplateDraftFromSesAction(
           subject: payload.subject,
           htmlContent: payload.htmlContent,
           textContent: payload.textContent,
+          editorJson: payload.editorJson,
           designJson: payload.designJson,
           previewVariables:
             extractPreviewVariables(payload.designJson ?? undefined) ?? {},
@@ -544,12 +742,13 @@ export async function resetTemplateDraftFromSesAction(
         id: created.id,
         name: payload.name,
         sesTemplateName: payload.sesTemplateName,
-        subject: payload.subject,
-        htmlContent: payload.htmlContent,
-        textContent: payload.textContent,
-        designJson: payload.designJson,
-        previewVariables:
-          extractPreviewVariables(payload.designJson ?? undefined) ?? {},
+          subject: payload.subject,
+          htmlContent: payload.htmlContent,
+          textContent: payload.textContent,
+          editorJson: payload.editorJson,
+          designJson: payload.designJson,
+          previewVariables:
+            extractPreviewVariables(payload.designJson ?? undefined) ?? {},
         brandKitId: extractBrandKitId(payload.designJson ?? undefined)
       }
     };

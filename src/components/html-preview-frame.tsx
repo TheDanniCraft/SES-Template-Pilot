@@ -15,11 +15,12 @@ export function HtmlPreviewFrame({
   theme = "light"
 }: HtmlPreviewFrameProps) {
   const previewId = useId().replace(/:/g, "-");
-  const [height, setHeight] = useState(520);
+  const [height, setHeight] = useState(320);
   const srcDoc = useMemo(
     () => toPreviewDocument(html, theme, previewId),
     [html, previewId, theme]
   );
+  const frameKey = useMemo(() => `${previewId}-${theme}`, [previewId, theme]);
 
   useEffect(() => {
     const onMessage = (event: MessageEvent) => {
@@ -45,15 +46,12 @@ export function HtmlPreviewFrame({
 
   return (
     <iframe
-      key={`${previewId}-${theme}`}
+      key={frameKey}
       className={`block w-full ${className ?? ""}`.trim()}
       sandbox="allow-scripts"
       scrolling="no"
       srcDoc={srcDoc}
-      style={{
-        height,
-        colorScheme: theme === "system" ? "light dark" : theme
-      }}
+      style={{ height, transition: "none" }}
       title="HTML preview"
     />
   );

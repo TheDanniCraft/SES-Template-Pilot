@@ -1,4 +1,5 @@
 @import "tailwindcss";
+@import "@maily-to/core/style.css";
 @plugin "../../hero.ts";
 @source "../../node_modules/@heroui/theme/dist/**/*.{js,ts,jsx,tsx}";
 @custom-variant dark (&:is(.dark *));
@@ -231,4 +232,113 @@ a {
   background: var(--bk-accent-light, #5f06f5) !important;
   border: 1px solid var(--bk-accent-light, #5f06f5) !important;
   color: var(--bk-button-text-light, #ffffff) !important;
+}
+
+.maily-editor-shell-dark #mly-editor {
+  color: #e2e8f0;
+}
+
+.maily-editor-shell-dark #mly-editor .mly\:bg-white,
+.maily-editor-shell-dark #mly-editor .mly\:bg-gray-900 {
+  background-color: #0b1220 !important;
+}
+
+.maily-editor-shell-dark #mly-editor .mly\:bg-soft-gray,
+.maily-editor-shell-dark #mly-editor .mly\:bg-soft-gray\/40,
+.maily-editor-shell-dark #mly-editor .mly\:bg-gray-50 {
+  background-color: #111827 !important;
+}
+
+.maily-editor-shell-dark #mly-editor .mly\:bg-gray-100 {
+  background-color: #1f2937 !important;
+}
+
+.maily-editor-shell-dark #mly-editor .mly\:bg-gray-200 {
+  background-color: #334155 !important;
+}
+
+.maily-editor-shell-dark #mly-editor .mly\:text-black,
+.maily-editor-shell-dark #mly-editor .mly\:text-gray-900,
+.maily-editor-shell-dark #mly-editor .mly\:text-gray-950,
+.maily-editor-shell-dark #mly-editor .mly\:text-midnight-gray {
+  color: #e2e8f0 !important;
+}
+
+.maily-editor-shell-dark #mly-editor .mly\:text-gray-700,
+.maily-editor-shell-dark #mly-editor .mly\:text-gray-600,
+.maily-editor-shell-dark #mly-editor .mly\:text-gray-500 {
+  color: #cbd5e1 !important;
+}
+
+.maily-editor-shell-dark #mly-editor .mly\:border-gray-200,
+.maily-editor-shell-dark #mly-editor .mly\:border-gray-300,
+.maily-editor-shell-dark #mly-editor .mly\:border-slate-200 {
+  border-color: #334155 !important;
+}
+
+.maily-editor-shell-dark #mly-editor .ProseMirror {
+  color: #f8fafc !important;
+}
+
+.maily-editor-shell-dark #mly-editor .ProseMirror :where(p,li,blockquote,h1,h2,h3,h4,h5,h6,td,th,div,span):not([style*="color"]) {
+  color: #f8fafc !important;
+}
+
+.maily-editor-shell-dark #mly-editor input,
+.maily-editor-shell-dark #mly-editor textarea,
+.maily-editor-shell-dark #mly-editor select {
+  background-color: #0f172a !important;
+  border-color: #334155 !important;
+  color: #e2e8f0 !important;
+}
+
+.maily-editor-shell-dark #mly-editor input::placeholder,
+.maily-editor-shell-dark #mly-editor textarea::placeholder {
+  color: #64748b !important;
+}
+
+.maily-editor-shell #mly-editor .mly\:bg-yellow-200 {
+  background-color: var(--ses-editor-accent, #22d3ee) !important;
+}
+
+.maily-editor-shell #mly-editor .mly\:bg-yellow-200.mly\:text-midnight-gray {
+  color: var(--ses-editor-accent-foreground, #041015) !important;
+}
+
+.maily-editor-shell #mly-editor .mly\:bg-blue-200 {
+  background-color: var(--ses-editor-accent, #22d3ee) !important;
+}
+
+.maily-editor-shell #mly-editor .mly\:bg-blue-200.mly\:text-midnight-gray,
+.maily-editor-shell #mly-editor .mly\:bg-yellow-200 .mly\:text-midnight-gray,
+.maily-editor-shell #mly-editor .mly\:bg-blue-200 .mly\:text-midnight-gray,
+.maily-editor-shell #mly-editor .mly\:bg-yellow-200 .mly\:text-white,
+.maily-editor-shell #mly-editor .mly\:bg-blue-200 .mly\:text-white {
+  color: var(--ses-editor-accent-foreground, #041015) !important;
+}
+
+.maily-editor-shell #mly-editor {
+  overflow: hidden;
+}
+
+.maily-editor-shell-light #mly-editor .mly\:text-gray-400,
+.maily-editor-shell-light #mly-editor .mly\:text-gray-500,
+.maily-editor-shell-light #mly-editor .mly\:text-gray-600,
+.maily-editor-shell-light #mly-editor .mly\:text-gray-700 {
+  color: #334155 !important;
+}
+
+.maily-editor-shell-light #mly-editor .mly\:text-midnight-gray {
+  color: #0f172a !important;
+}
+
+.maily-editor-shell-light #mly-editor .mly\:bg-soft-gray,
+.maily-editor-shell-light #mly-editor .mly\:bg-soft-gray\/40,
+.maily-editor-shell-light #mly-editor .mly\:bg-gray-50 {
+  background-color: #f8fafc !important;
+}
+
+.maily-editor-shell-light #mly-editor :is(button, [role="button"], input, select, textarea):disabled,
+.maily-editor-shell-light #mly-editor [aria-disabled="true"] {
+  opacity: 0.6 !important;
 }

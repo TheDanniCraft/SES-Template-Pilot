@@ -19,9 +19,12 @@ import {
 import { Plus, RefreshCw } from "lucide-react";
 
 type TemplateRow = {
+  id: string;
+  href: string;
   name: string;
   subject: string;
-  createdAt: Date | null;
+  createdAt: string | null;
+  source: "local" | "ses" | "synced";
 };
 
 type TemplatesTableProps = {
@@ -33,6 +36,17 @@ type TemplatesTableProps = {
 export function TemplatesTable({ templates, success, error }: TemplatesTableProps) {
   const router = useRouter();
   const [isRefreshing, startRefreshing] = useTransition();
+
+  const formatCreatedAt = (value: string | null) => {
+    if (!value) {
+      return "-";
+    }
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) {
+      return "-";
+    }
+    return `${date.toISOString().slice(0, 19).replace("T", " ")} UTC`;
+  };
 
   const onReloadFromSes = () => {
     startRefreshing(() => {
@@ -73,23 +87,45 @@ export function TemplatesTable({ templates, success, error }: TemplatesTableProp
           <TableHeader>
             <TableColumn>NAME</TableColumn>
             <TableColumn>SUBJECT</TableColumn>
+            <TableColumn>SOURCE</TableColumn>
             <TableColumn>CREATED AT</TableColumn>
           </TableHeader>
           <TableBody
             emptyContent={
-              success ? "No templates found in SES." : `Failed to load SES templates: ${error}`
+              success
+                ? "No templates found yet. Create one or save a local draft."
+                : `Failed to load SES templates: ${error}`
             }
           >
             {templates.map((template) => (
-              <TableRow key={template.name}>
+              <TableRow key={template.id}>
                 <TableCell>
-                  <Link className="font-medium text-cyan-300 hover:underline" href={`/app/templates/${template.name}`}>
+                  <Link className="font-medium text-cyan-300 hover:underline" href={template.href}>
                     {template.name || "-"}
                   </Link>
                 </TableCell>
                 <TableCell>{template.subject || "-"}</TableCell>
                 <TableCell>
-                  {template.createdAt ? new Date(template.createdAt).toLocaleString() : "-"}
+                  <Chip
+                    color={
+                      template.source === "local"
+                        ? "warning"
+                        : template.source === "synced"
+                          ? "success"
+                          : "default"
+                    }
+                    size="sm"
+                    variant="flat"
+                  >
+                    {template.source === "local"
+                      ? "Local draft"
+                      : template.source === "synced"
+                        ? "SES + local"
+                        : "SES only"}
+                  </Chip>
+                </TableCell>
+                <TableCell>
+                  {formatCreatedAt(template.createdAt)}
                 </TableCell>
               </TableRow>
             ))}

@@ -74,6 +74,7 @@ export const templateDrafts = pgTable(
 		subject: text("subject").notNull(),
 		htmlContent: text("html_content").notNull(),
 		textContent: text("text_content").notNull(),
+		editorJson: jsonb("editor_json").$type<Record<string, unknown>>(),
 		designJson: jsonb("design_json").$type<Record<string, unknown>>(),
 		createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
 		updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull()

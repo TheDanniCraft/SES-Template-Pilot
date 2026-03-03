@@ -15,6 +15,7 @@ export default async function NewTemplatePage() {
       </header>
       <div className="panel rounded-2xl p-4">
         <TemplateEditorForm
+          key="new-template"
           brandKits={brandKits}
           initialValues={{
             name: "",
@@ -23,6 +24,7 @@ export default async function NewTemplatePage() {
             htmlContent:
               "<div style='font-family:Arial'><h1>Hello {{name}}</h1><p>Welcome to {{company}}.</p></div>",
             textContent: "Hello {{name}}, welcome to {{company}}.",
+            editorJson: undefined,
             brandKitId: undefined,
             previewVariables: {
               name: "Alex",
