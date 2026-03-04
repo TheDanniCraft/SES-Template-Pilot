@@ -11,18 +11,23 @@ const hexSchema = z
   .trim()
   .regex(/^#?[0-9a-fA-F]{3}([0-9a-fA-F]{3})?$/, "Invalid hex color");
 
+const colorValuesSchema = z.object({
+  text: hexSchema,
+  muted: hexSchema,
+  surface: hexSchema,
+  border: hexSchema,
+  accent: hexSchema,
+  link: hexSchema,
+  buttonText: hexSchema
+});
+
 const brandKitSchema = z.object({
   id: z.string().trim().uuid("Invalid brand kit id"),
   name: z.string().trim().min(2, "Name is required"),
   iconUrl: z.string().trim().url("Icon URL must be a valid URL"),
-  colors: z.object({
-    text: hexSchema,
-    muted: hexSchema,
-    surface: hexSchema,
-    border: hexSchema,
-    accent: hexSchema,
-    link: hexSchema,
-    buttonText: hexSchema
+  colors: colorValuesSchema.extend({
+    dark: colorValuesSchema.optional(),
+    light: colorValuesSchema.optional()
   })
 });
 

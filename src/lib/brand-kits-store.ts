@@ -1,22 +1,43 @@
 import { randomUUID } from "node:crypto";
 import { and, count, eq } from "drizzle-orm";
-import type { BrandKit } from "@/lib/brand-kits";
+import {
+  BRAND_KIT_COLOR_KEYS,
+  type BrandKit,
+  type BrandKitColorValues
+} from "@/lib/brand-kits";
 import { db } from "@/lib/db";
 import { attachBrandKitId, extractBrandKitId } from "@/lib/ses-template-json";
 import { nowSql, brandKits, templateDrafts } from "@/lib/schema";
+
+const DEFAULT_BASE_COLORS: BrandKitColorValues = {
+  text: "#0f172a",
+  muted: "#475569",
+  surface: "#ffffff",
+  border: "#e2e8f0",
+  accent: "#5f06f5",
+  link: "#5f06f5",
+  buttonText: "#ffffff"
+};
+
+const DEFAULT_DARK_COLORS: BrandKitColorValues = {
+  text: "#e2e8f0",
+  muted: "#94a3b8",
+  surface: "#0f172a",
+  border: "#5f06f5",
+  accent: "#5f06f5",
+  link: "#5f06f5",
+  buttonText: "#ffffff"
+};
 
 const DEFAULT_BRAND_KITS: Array<Omit<BrandKit, "id">> = [
   {
     name: "Clipify",
     iconUrl: "https://storage.cloud.thedannicraft.de/assets/Clipify.png",
     colors: {
-      text: "#e2e8f0",
-      muted: "#94a3b8",
-      surface: "#0f172a",
-      border: "#5F06F5",
-      accent: "#5F06F5",
-      link: "#5F06F5",
-      buttonText: "#ffffff"
+      ...DEFAULT_BASE_COLORS,
+      dark: {
+        ...DEFAULT_DARK_COLORS
+      }
     }
   }
 ];
@@ -44,18 +65,47 @@ function sanitizeHex(value: string, fallback: string) {
   return fallback;
 }
 
+function sanitizeColorValues(
+  input: Partial<BrandKitColorValues> | undefined,
+  fallback: BrandKitColorValues
+): BrandKitColorValues {
+  const entries = BRAND_KIT_COLOR_KEYS.map((key) => {
+    const nextValue = input?.[key];
+    const fallbackValue = fallback[key];
+    return [key, sanitizeHex(typeof nextValue === "string" ? nextValue : "", fallbackValue)];
+  });
+
+  return Object.fromEntries(entries) as BrandKitColorValues;
+}
+
+function normalizeVariantToggle(
+  variant: BrandKitColorValues | undefined,
+  fallback: BrandKitColorValues
+) {
+  if (!variant) {
+    return undefined;
+  }
+  return sanitizeColorValues(variant, fallback);
+}
+
+function toBaseColors(input: BrandKit["colors"]): BrandKitColorValues {
+  const baseEntries = BRAND_KIT_COLOR_KEYS.map((key) => [key, input[key]]);
+  return Object.fromEntries(baseEntries) as BrandKitColorValues;
+}
+
 function sanitizeBrandKitFields(input: Omit<BrandKit, "id">): Omit<BrandKit, "id"> {
+  const legacyBase = toBaseColors(input.colors);
+  const sourceBase = input.colors.light ?? legacyBase;
+  const sourceDark = input.colors.dark ?? (input.colors.light ? legacyBase : undefined);
+  const base = sanitizeColorValues(sourceBase, DEFAULT_BASE_COLORS);
+  const dark = normalizeVariantToggle(sourceDark, DEFAULT_DARK_COLORS);
+
   return {
     name: input.name.trim(),
     iconUrl: input.iconUrl.trim(),
     colors: {
-      text: sanitizeHex(input.colors.text, "#e2e8f0"),
-      muted: sanitizeHex(input.colors.muted, "#94a3b8"),
-      surface: sanitizeHex(input.colors.surface, "#0f172a"),
-      border: sanitizeHex(input.colors.border, "#5f06f5"),
-      accent: sanitizeHex(input.colors.accent, "#5f06f5"),
-      link: sanitizeHex(input.colors.link, "#5f06f5"),
-      buttonText: sanitizeHex(input.colors.buttonText, "#ffffff")
+      ...base,
+      ...(dark ? { dark } : {})
     }
   };
 }

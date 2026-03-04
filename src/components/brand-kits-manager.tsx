@@ -7,7 +7,8 @@ import {
   Card,
   CardBody,
   CardHeader,
-  Input
+  Input,
+  Switch
 } from "@heroui/react";
 import { Plus, Save, Trash2 } from "lucide-react";
 import { toast } from "sonner";
@@ -15,7 +16,10 @@ import {
   deleteBrandKitAction,
   saveBrandKitAction
 } from "@/lib/actions/brand-kits";
-import type { BrandKit } from "@/lib/brand-kits";
+import {
+  type BrandKit,
+  type BrandKitColorValues
+} from "@/lib/brand-kits";
 import { useSaveShortcut } from "@/hooks/use-save-shortcut";
 
 type BrandKitsManagerProps = {
@@ -25,6 +29,8 @@ type BrandKitsManagerProps = {
 type BrandKitDraft = BrandKit & {
   localId: string;
 };
+
+type BrandColorKey = keyof BrandKitColorValues;
 
 const PRESET_COLORS = [
   "#f8fafc",
@@ -43,7 +49,7 @@ const PRESET_COLORS = [
 ] as const;
 
 const COLOR_FIELDS: Array<{
-  key: keyof BrandKit["colors"];
+  key: BrandColorKey;
   label: string;
 }> = [
   { key: "text", label: "Text" },
@@ -158,9 +164,12 @@ function createLocalId() {
 }
 
 function toDraft(kit: BrandKit): BrandKitDraft {
+  const colorsWithoutLegacyLight = { ...kit.colors };
+  delete colorsWithoutLegacyLight.light;
   return {
     ...kit,
-    localId: createLocalId()
+    colors: colorsWithoutLegacyLight,
+    localId: kit.id
   };
 }
 
@@ -367,6 +376,32 @@ function BrandColorField({ label, value, onChange }: BrandColorFieldProps) {
   );
 }
 
+const DEFAULT_BASE_COLORS: BrandKitColorValues = {
+  text: "#0f172a",
+  muted: "#475569",
+  surface: "#ffffff",
+  border: "#e2e8f0",
+  accent: "#5f06f5",
+  link: "#5f06f5",
+  buttonText: "#ffffff"
+};
+
+function getBaseColors(colors: BrandKit["colors"]): BrandKitColorValues {
+  return {
+    text: colors.text,
+    muted: colors.muted,
+    surface: colors.surface,
+    border: colors.border,
+    accent: colors.accent,
+    link: colors.link,
+    buttonText: colors.buttonText
+  };
+}
+
+function createDarkVariant(base: BrandKitColorValues): BrandKitColorValues {
+  return { ...base };
+}
+
 function createEmptyKit(): BrandKitDraft {
   const id = createLocalId();
   return {
@@ -374,15 +409,7 @@ function createEmptyKit(): BrandKitDraft {
     localId: id,
     name: "New Brand Kit",
     iconUrl: "https://placehold.co/80x80/111827/ffffff?text=BK",
-    colors: {
-      text: "#e2e8f0",
-      muted: "#94a3b8",
-      surface: "#0f172a",
-      border: "#5f06f5",
-      accent: "#5f06f5",
-      link: "#5f06f5",
-      buttonText: "#ffffff"
-    }
+    colors: { ...DEFAULT_BASE_COLORS }
   };
 }
 
@@ -392,6 +419,83 @@ export function BrandKitsManager({ initialKits }: BrandKitsManagerProps) {
 
   const updateKit = (index: number, next: BrandKitDraft) => {
     setKits((current) => current.map((item, i) => (i === index ? next : item)));
+  };
+
+  const updateBaseColor = (
+    index: number,
+    key: BrandColorKey,
+    value: string
+  ) => {
+    const kit = kits[index];
+    if (!kit) {
+      return;
+    }
+
+    updateKit(index, {
+      ...kit,
+      colors: {
+        ...kit.colors,
+        [key]: value
+      }
+    });
+  };
+
+  const updateVariantColor = (
+    index: number,
+    mode: "dark",
+    key: BrandColorKey,
+    value: string
+  ) => {
+    const kit = kits[index];
+    if (!kit) {
+      return;
+    }
+
+    const variant = kit.colors[mode];
+    if (!variant) {
+      return;
+    }
+
+    updateKit(index, {
+      ...kit,
+      colors: {
+        ...kit.colors,
+        [mode]: {
+          ...variant,
+          [key]: value
+        }
+      }
+    });
+  };
+
+  const setVariantEnabled = (
+    index: number,
+    mode: "dark",
+    enabled: boolean
+  ) => {
+    const kit = kits[index];
+    if (!kit) {
+      return;
+    }
+
+    const base = getBaseColors(kit.colors);
+    if (!enabled) {
+      const nextColors = { ...kit.colors };
+      delete nextColors[mode];
+      updateKit(index, {
+        ...kit,
+        colors: nextColors
+      });
+      return;
+    }
+
+    updateKit(index, {
+      ...kit,
+      colors: {
+        ...kit.colors,
+        [mode]: createDarkVariant(base)
+      }
+    });
   };
 
   const onSave = useCallback((kit: BrandKitDraft) => {
@@ -483,23 +587,52 @@ export function BrandKitsManager({ initialKits }: BrandKitsManagerProps) {
               />
             </div>
 
-            <div className="grid gap-3 md:grid-cols-4">
-              {COLOR_FIELDS.map(({ key, label }) => (
-                <BrandColorField
-                  key={key}
-                  label={label}
-                  value={kit.colors[key]}
-                  onChange={(value) =>
-                    updateKit(index, {
-                      ...kit,
-                      colors: {
-                        ...kit.colors,
-                        [key]: value
-                      }
-                    })
-                  }
-                />
-              ))}
+            <div className="space-y-3 rounded-xl border border-white/10 bg-black/10 p-3">
+              <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-300">
+                Base Colors
+              </p>
+              <div className="grid gap-3 md:grid-cols-4">
+                {COLOR_FIELDS.map(({ key, label }) => (
+                  <BrandColorField
+                    key={`base-${key}`}
+                    label={label}
+                    value={kit.colors[key]}
+                    onChange={(value) => updateBaseColor(index, key, value)}
+                  />
+                ))}
+              </div>
+            </div>
+
+            <div className="space-y-3 rounded-xl border border-white/10 bg-black/10 p-3">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-300">
+                  Dark Mode Override
+                </p>
+                <Switch
+                  isSelected={Boolean(kit.colors.dark)}
+                  size="sm"
+                  onValueChange={(enabled) => setVariantEnabled(index, "dark", enabled)}
+                >
+                  Enabled
+                </Switch>
+              </div>
+              {kit.colors.dark ? (
+                <div className="grid gap-3 md:grid-cols-4">
+                  {COLOR_FIELDS.map(({ key, label: colorLabel }) => (
+                    <BrandColorField
+                      key={`dark-${key}`}
+                      label={colorLabel}
+                      value={kit.colors.dark?.[key] ?? kit.colors[key]}
+                      onChange={(value) => updateVariantColor(index, "dark", key, value)}
+                    />
+                  ))}
+                </div>
+              ) : (
+                <p className="text-xs text-slate-400">
+                  Base colors are used for light mode. Enable this to add dark-mode values via{" "}
+                  <code>prefers-color-scheme</code>.
+                </p>
+              )}
             </div>
 
             <div className="flex flex-wrap gap-2">
