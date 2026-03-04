@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useTransition } from "react";
+import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import {
   Button,
@@ -16,7 +16,9 @@ import {
   TableHeader,
   TableRow
 } from "@heroui/react";
-import { Plus, RefreshCw } from "lucide-react";
+import { Copy, Plus, RefreshCw } from "lucide-react";
+import { toast } from "sonner";
+import { duplicateTemplateAction } from "@/lib/actions/templates";
 
 type TemplateRow = {
   id: string;
@@ -36,6 +38,7 @@ type TemplatesTableProps = {
 export function TemplatesTable({ templates, success, error }: TemplatesTableProps) {
   const router = useRouter();
   const [isRefreshing, startRefreshing] = useTransition();
+  const [duplicatingId, setDuplicatingId] = useState<string | null>(null);
 
   const formatCreatedAt = (value: string | null) => {
     if (!value) {
@@ -52,6 +55,30 @@ export function TemplatesTable({ templates, success, error }: TemplatesTableProp
     startRefreshing(() => {
       router.refresh();
     });
+  };
+
+  const onDuplicate = async (template: TemplateRow) => {
+    if (duplicatingId) {
+      return;
+    }
+
+    setDuplicatingId(template.id);
+    try {
+      const result = await duplicateTemplateAction({
+        source: template.source,
+        id: template.id
+      });
+
+      if (!result.success || !result.draftId) {
+        toast.error(result.error ?? "Failed to duplicate template");
+        return;
+      }
+
+      toast.success("Template duplicated");
+      router.replace(`/app/templates/${result.draftId}`);
+    } finally {
+      setDuplicatingId(null);
+    }
   };
 
   return (
@@ -89,6 +116,7 @@ export function TemplatesTable({ templates, success, error }: TemplatesTableProp
             <TableColumn>SUBJECT</TableColumn>
             <TableColumn>SOURCE</TableColumn>
             <TableColumn>CREATED AT</TableColumn>
+            <TableColumn>ACTIONS</TableColumn>
           </TableHeader>
           <TableBody
             emptyContent={
@@ -126,6 +154,22 @@ export function TemplatesTable({ templates, success, error }: TemplatesTableProp
                 </TableCell>
                 <TableCell>
                   {formatCreatedAt(template.createdAt)}
+                </TableCell>
+                <TableCell>
+                  <Button
+                    isLoading={duplicatingId === template.id}
+                    size="sm"
+                    startContent={
+                      duplicatingId !== template.id ? (
+                        <Copy className="h-3.5 w-3.5" />
+                      ) : undefined
+                    }
+                    type="button"
+                    variant="flat"
+                    onPress={() => onDuplicate(template)}
+                  >
+                    Duplicate
+                  </Button>
                 </TableCell>
               </TableRow>
             ))}

@@ -36,6 +36,8 @@ type MailyEditorProps = {
   value: string;
   contentJson?: Record<string, unknown>;
   refreshToken?: number;
+  emitInitialSnapshot?: boolean;
+  onInteract?: () => void;
   onChange: (next: {
     html: string;
     contentJson: Record<string, unknown>;
@@ -53,6 +55,24 @@ export type MailyEditorHandle = {
     | null
   >;
 };
+
+function isEditorAlive(editorInstance: any) {
+  if (!editorInstance || editorInstance.isDestroyed) {
+    return false;
+  }
+
+  const view = editorInstance.view;
+  if (!view || view.isDestroyed) {
+    return false;
+  }
+
+  // Tiptap/PM internals can be torn down before instance reference changes.
+  if (!("docView" in view) || !view.docView) {
+    return false;
+  }
+
+  return true;
+}
 
 function parseHexColor(input: string) {
   const trimmed = (input || "").trim();
@@ -683,6 +703,8 @@ export const MailyEditor = forwardRef<MailyEditorHandle, MailyEditorProps>(funct
     value,
     contentJson,
     refreshToken = 0,
+    emitInitialSnapshot = false,
+    onInteract,
     onChange,
     surfaceTheme = "light",
     brandKit
@@ -691,6 +713,7 @@ export const MailyEditor = forwardRef<MailyEditorHandle, MailyEditorProps>(funct
 ) {
   const blocks = useMemo(() => createBlocks(brandKit), [brandKit]);
   const editorRef = useRef<any>(null);
+  const onInteractRef = useRef(onInteract);
   const onChangeRef = useRef(onChange);
   const hydratedContentJson = useMemo(() => {
     if (!contentJson || Object.keys(contentJson).length === 0) {
@@ -721,10 +744,15 @@ export const MailyEditor = forwardRef<MailyEditorHandle, MailyEditorProps>(funct
   const renderRequestCounterRef = useRef(0);
   const appliedRenderCounterRef = useRef(0);
   const isMountedRef = useRef(true);
+  const trailingUpdateTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     onChangeRef.current = onChange;
   }, [onChange]);
+
+  useEffect(() => {
+    onInteractRef.current = onInteract;
+  }, [onInteract]);
 
   useEffect(() => {
     const normalizedValue = (value || "").trim();
@@ -743,12 +771,31 @@ export const MailyEditor = forwardRef<MailyEditorHandle, MailyEditorProps>(funct
   useEffect(() => {
     return () => {
       isMountedRef.current = false;
+      if (trailingUpdateTimerRef.current) {
+        clearTimeout(trailingUpdateTimerRef.current);
+      }
     };
   }, []);
 
+  useEffect(() => {
+    if (trailingUpdateTimerRef.current) {
+      clearTimeout(trailingUpdateTimerRef.current);
+      trailingUpdateTimerRef.current = null;
+    }
+  }, [editorKey]);
+
   const getNormalizedJsonFromEditor = useCallback(
     (editorInstance: any) => {
-      const nextJson = editorInstance.getJSON?.();
+      if (!isEditorAlive(editorInstance)) {
+        return null;
+      }
+
+      let nextJson: unknown;
+      try {
+        nextJson = editorInstance.getJSON?.();
+      } catch {
+        return null;
+      }
       if (!nextJson || typeof nextJson !== "object") {
         return null;
       }
@@ -762,8 +809,13 @@ export const MailyEditor = forwardRef<MailyEditorHandle, MailyEditorProps>(funct
           )
         : (nextJson as Record<string, unknown>);
       const normalizedJson = sanitizeRenderableMediaSources(withBrandDefaults);
-      const rawHtml =
-        typeof editorInstance.getHTML === "function" ? editorInstance.getHTML() : "";
+      let rawHtml = "";
+      try {
+        rawHtml =
+          typeof editorInstance.getHTML === "function" ? editorInstance.getHTML() : "";
+      } catch {
+        rawHtml = "";
+      }
 
       if (typeof rawHtml === "string" && hasMailyMarkerHtml(rawHtml)) {
         const hydratedLinkCards = hydrateLinkCardAttrsFromRawHtml(
@@ -812,7 +864,7 @@ export const MailyEditor = forwardRef<MailyEditorHandle, MailyEditorProps>(funct
 
   const emitFromEditor = useCallback(
     async (editorInstance: any) => {
-      if (!editorInstance) {
+      if (!editorInstance || editorRef.current !== editorInstance || !isEditorAlive(editorInstance)) {
         return null;
       }
 
@@ -823,21 +875,29 @@ export const MailyEditor = forwardRef<MailyEditorHandle, MailyEditorProps>(funct
 
       const requestId = ++renderRequestCounterRef.current;
 
-      const immediateHtmlRaw =
-        typeof editorInstance.getHTML === "function" ? editorInstance.getHTML() : "";
+      let immediateHtmlRaw = "";
+      try {
+        immediateHtmlRaw =
+          typeof editorInstance.getHTML === "function" ? editorInstance.getHTML() : "";
+      } catch {
+        immediateHtmlRaw = "";
+      }
       const immediateHtml =
         typeof immediateHtmlRaw === "string" ? immediateHtmlRaw : "";
+      const immediateHasMailyMarkup = hasMailyMarkerHtml(immediateHtml);
       const lastKnownHtml =
         typeof lastEmittedHtmlRef.current === "string"
           ? lastEmittedHtmlRef.current
           : "";
       const fallbackFromProp = typeof value === "string" ? value : "";
       const previewSafeHtml =
-        lastKnownHtml.trim().length > 0
-          ? lastKnownHtml
-          : fallbackFromProp.trim().length > 0
-            ? fallbackFromProp
-            : immediateHtml;
+        !immediateHasMailyMarkup && immediateHtml.trim().length > 0
+          ? immediateHtml
+          : lastKnownHtml.trim().length > 0
+            ? lastKnownHtml
+            : fallbackFromProp.trim().length > 0
+              ? fallbackFromProp
+              : "";
       if (previewSafeHtml.trim().length > 0) {
         lastEditorContentRef.current = normalizedJson;
         onChangeRef.current({
@@ -866,10 +926,14 @@ export const MailyEditor = forwardRef<MailyEditorHandle, MailyEditorProps>(funct
           contentJson: normalizedJson
         };
       } catch {
-        const fallbackHtmlRaw =
-          typeof editorInstance.getHTML === "function"
-            ? editorInstance.getHTML()
-            : lastEmittedHtmlRef.current;
+        let fallbackHtmlRaw: unknown = lastEmittedHtmlRef.current;
+        if (isEditorAlive(editorInstance) && typeof editorInstance.getHTML === "function") {
+          try {
+            fallbackHtmlRaw = editorInstance.getHTML();
+          } catch {
+            fallbackHtmlRaw = lastEmittedHtmlRef.current;
+          }
+        }
         const fallbackHtml =
           typeof fallbackHtmlRaw === "string" ? fallbackHtmlRaw : "";
         const fallbackFromProp = typeof value === "string" ? value : "";
@@ -913,8 +977,37 @@ export const MailyEditor = forwardRef<MailyEditorHandle, MailyEditorProps>(funct
   const handleEditorCreate = useCallback(
     (editorInstance: any) => {
       editorRef.current = editorInstance;
+      if (emitInitialSnapshot && isEditorAlive(editorInstance)) {
+        void emitFromEditor(editorInstance);
+      }
     },
-    []
+    [emitFromEditor, emitInitialSnapshot]
+  );
+
+  const handleEditorUpdate = useCallback(
+    (editorInstance: any) => {
+      if (!isEditorAlive(editorInstance)) {
+        return;
+      }
+      void emitFromEditor(editorInstance);
+
+      if (trailingUpdateTimerRef.current) {
+        clearTimeout(trailingUpdateTimerRef.current);
+      }
+
+      // Some attribute updates land a tick after onUpdate; run a trailing pass.
+      trailingUpdateTimerRef.current = setTimeout(() => {
+        if (!isMountedRef.current) {
+          return;
+        }
+        const activeEditor = editorRef.current;
+        if (!isEditorAlive(activeEditor)) {
+          return;
+        }
+        void emitFromEditor(activeEditor);
+      }, 60);
+    },
+    [emitFromEditor]
   );
 
   useImperativeHandle(
@@ -925,6 +1018,9 @@ export const MailyEditor = forwardRef<MailyEditorHandle, MailyEditorProps>(funct
           return null;
         }
         const editorInstance = editorRef.current;
+        if (!isEditorAlive(editorInstance)) {
+          return null;
+        }
         const normalizedJson = getNormalizedJsonFromEditor(editorInstance);
         if (!normalizedJson) {
           return null;
@@ -957,6 +1053,9 @@ export const MailyEditor = forwardRef<MailyEditorHandle, MailyEditorProps>(funct
           ? "maily-editor-shell-dark border border-white/15 bg-slate-950/40"
           : "maily-editor-shell-light border border-slate-300 bg-white"
       }`}
+      onDropCapture={() => onInteractRef.current?.()}
+      onInputCapture={() => onInteractRef.current?.()}
+      onPasteCapture={() => onInteractRef.current?.()}
       style={
         brandKit
           ? ({
@@ -984,7 +1083,7 @@ export const MailyEditor = forwardRef<MailyEditorHandle, MailyEditorProps>(funct
         }
         contentJson={hydratedContentJson as any}
         onCreate={handleEditorCreate}
-        onUpdate={emitFromEditor}
+        onUpdate={handleEditorUpdate}
       />
     </div>
   );

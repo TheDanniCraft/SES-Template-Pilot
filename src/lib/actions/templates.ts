@@ -19,6 +19,7 @@ import {
   normalizeDesignJson
 } from "@/lib/ses-template-json";
 import { getUserSesClients } from "@/lib/user-ses";
+import { decodeEscapedUnicode } from "@/lib/unicode";
 import {
   syncTemplateSchema,
   templateDraftSchema,
@@ -238,6 +239,63 @@ async function getAuthorizedUser() {
   return getServerSessionUser();
 }
 
+function decodeDraftSubject<T extends { subject: string }>(draft: T) {
+  return {
+    ...draft,
+    subject: decodeEscapedUnicode(draft.subject)
+  };
+}
+
+function slugifyTemplateName(input: string) {
+  const normalized = input
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  return normalized || "template";
+}
+
+async function generateUniqueDraftName(userId: string, baseName: string) {
+  const normalizedBase = baseName.trim() || "Template";
+  let next = `${normalizedBase} (Copy)`;
+  let suffix = 2;
+
+  while (true) {
+    const exists = await db.query.templateDrafts.findFirst({
+      where: and(eq(templateDrafts.userId, userId), eq(templateDrafts.name, next))
+    });
+
+    if (!exists) {
+      return next;
+    }
+
+    next = `${normalizedBase} (Copy ${suffix})`;
+    suffix += 1;
+  }
+}
+
+async function generateUniqueSesTemplateName(userId: string, baseName: string) {
+  const normalizedBase = slugifyTemplateName(baseName);
+  let next = `${normalizedBase}-copy`;
+  let suffix = 2;
+
+  while (true) {
+    const exists = await db.query.templateDrafts.findFirst({
+      where: and(
+        eq(templateDrafts.userId, userId),
+        eq(templateDrafts.sesTemplateName, next)
+      )
+    });
+
+    if (!exists) {
+      return next;
+    }
+
+    next = `${normalizedBase}-copy-${suffix}`;
+    suffix += 1;
+  }
+}
+
 export async function listSesTemplates() {
   const user = await getAuthorizedUser();
   if (!user) {
@@ -282,7 +340,7 @@ export async function listSesTemplates() {
           );
           return {
             name: item.Name,
-            subject: details.Template?.SubjectPart ?? "",
+            subject: decodeEscapedUnicode(details.Template?.SubjectPart ?? ""),
             createdAt: item.CreatedTimestamp ?? null
           };
         } catch {
@@ -330,7 +388,13 @@ export async function getSesTemplate(name: string) {
         TemplateName: name
       })
     );
-    return { success: true, data: response.Template };
+    const template = response.Template
+      ? {
+          ...response.Template,
+          SubjectPart: decodeEscapedUnicode(response.Template.SubjectPart ?? "")
+        }
+      : null;
+    return { success: true, data: template };
   } catch (error) {
     return {
       success: false,
@@ -352,7 +416,7 @@ export async function listLocalDrafts() {
     .from(templateDrafts)
     .where(eq(templateDrafts.userId, user.id))
     .orderBy(desc(templateDrafts.updatedAt));
-  return drafts;
+  return drafts.map(decodeDraftSubject);
 }
 
 export async function getLocalDraftById(id: string) {
@@ -368,7 +432,7 @@ export async function getLocalDraftById(id: string) {
   const draft = await db.query.templateDrafts.findFirst({
     where: and(eq(templateDrafts.id, id), eq(templateDrafts.userId, user.id))
   });
-  return draft ?? null;
+  return draft ? decodeDraftSubject(draft) : null;
 }
 
 export async function getLocalDraftBySesName(name: string) {
@@ -383,7 +447,134 @@ export async function getLocalDraftBySesName(name: string) {
       eq(templateDrafts.userId, user.id)
     )
   });
-  return draft ?? null;
+  return draft ? decodeDraftSubject(draft) : null;
+}
+
+type DuplicateTemplateInput = {
+  source: "local" | "synced" | "ses";
+  id: string;
+};
+
+export async function duplicateTemplateAction(input: DuplicateTemplateInput) {
+  const user = await getAuthorizedUser();
+  if (!user) {
+    return { success: false, error: "Unauthorized" };
+  }
+
+  const id = input.id.trim();
+  if (!id) {
+    return { success: false, error: "Template id is required" };
+  }
+
+  let sourceDraft: {
+    name: string;
+    sesTemplateName: string | null;
+    subject: string;
+    htmlContent: string;
+    textContent: string;
+    editorJson: Record<string, unknown> | null;
+    designJson: Record<string, unknown> | null;
+  } | null = null;
+
+  if (input.source === "ses") {
+    const sesTemplateName = id.startsWith("ses:") ? id.slice(4) : id;
+    if (!sesTemplateName) {
+      return { success: false, error: "Invalid SES template id" };
+    }
+
+    const ses = await getUserSesClients(user.id);
+    if (!ses.success) {
+      return { success: false, error: ses.error };
+    }
+
+    try {
+      const response = await ses.data.sesClient.send(
+        new GetTemplateCommand({
+          TemplateName: sesTemplateName
+        })
+      );
+      const template = response.Template;
+      if (!template?.TemplateName) {
+        return { success: false, error: "Template not found in SES" };
+      }
+
+      sourceDraft = {
+        name: template.TemplateName,
+        sesTemplateName: template.TemplateName,
+        subject: decodeEscapedUnicode(template.SubjectPart ?? ""),
+        htmlContent: template.HtmlPart ?? "",
+        textContent: template.TextPart ?? "",
+        editorJson: null,
+        designJson: null
+      };
+    } catch (error) {
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : "Failed to load SES template"
+      };
+    }
+  } else {
+    if (!isUuid(id)) {
+      return { success: false, error: "Invalid draft id" };
+    }
+
+    const localDraft = await db.query.templateDrafts.findFirst({
+      where: and(eq(templateDrafts.id, id), eq(templateDrafts.userId, user.id))
+    });
+
+    if (!localDraft) {
+      return { success: false, error: "Template draft not found" };
+    }
+
+    sourceDraft = {
+      name: localDraft.name,
+      sesTemplateName: localDraft.sesTemplateName,
+      subject: decodeEscapedUnicode(localDraft.subject),
+      htmlContent: localDraft.htmlContent,
+      textContent: localDraft.textContent,
+      editorJson: localDraft.editorJson ?? null,
+      designJson: localDraft.designJson ?? null
+    };
+  }
+
+  if (!sourceDraft) {
+    return { success: false, error: "Template source not found" };
+  }
+
+  const nextName = await generateUniqueDraftName(user.id, sourceDraft.name);
+  const nextSesTemplateName = await generateUniqueSesTemplateName(
+    user.id,
+    sourceDraft.sesTemplateName ?? sourceDraft.name
+  );
+
+  const nextDesignJson = attachBrandKitId(
+    attachPreviewVariables(
+      normalizeDesignJson(sourceDraft.designJson ?? undefined, {
+        sesTemplateName: nextSesTemplateName,
+        subject: sourceDraft.subject,
+        htmlContent: sourceDraft.htmlContent,
+        textContent: sourceDraft.textContent
+      }),
+      extractPreviewVariables(sourceDraft.designJson ?? undefined)
+    ),
+    extractBrandKitId(sourceDraft.designJson ?? undefined)
+  );
+
+  const [created] = await db
+    .insert(templateDrafts)
+    .values({
+      userId: user.id,
+      name: nextName,
+      sesTemplateName: nextSesTemplateName,
+      subject: sourceDraft.subject,
+      htmlContent: sourceDraft.htmlContent,
+      textContent: sourceDraft.textContent,
+      editorJson: sourceDraft.editorJson ?? undefined,
+      designJson: nextDesignJson
+    })
+    .returning({ id: templateDrafts.id });
+
+  return { success: true, draftId: created.id };
 }
 
 export async function saveTemplateDraftAction(input: TemplateDraftInput) {
@@ -404,6 +595,7 @@ export async function saveTemplateDraftAction(input: TemplateDraftInput) {
   }
 
   const payload = parsed.data;
+  const normalizedSubject = decodeEscapedUnicode(payload.subject);
   const normalizedEditorJson = normalizeEditorJsonForStorage(
     payload.editorJson,
     payload.htmlContent
@@ -412,7 +604,7 @@ export async function saveTemplateDraftAction(input: TemplateDraftInput) {
     attachPreviewVariables(
       normalizeDesignJson(payload.designJson, {
         sesTemplateName: payload.sesTemplateName,
-        subject: payload.subject,
+        subject: normalizedSubject,
         htmlContent: payload.htmlContent,
         textContent: payload.textContent
       }),
@@ -427,7 +619,7 @@ export async function saveTemplateDraftAction(input: TemplateDraftInput) {
       .set({
         name: payload.name,
         sesTemplateName: payload.sesTemplateName,
-        subject: payload.subject,
+        subject: normalizedSubject,
         htmlContent: payload.htmlContent,
         textContent: payload.textContent,
         editorJson: normalizedEditorJson,
@@ -449,7 +641,7 @@ export async function saveTemplateDraftAction(input: TemplateDraftInput) {
       userId: user.id,
       name: payload.name,
       sesTemplateName: payload.sesTemplateName,
-      subject: payload.subject,
+      subject: normalizedSubject,
       htmlContent: payload.htmlContent,
       textContent: payload.textContent,
       editorJson: normalizedEditorJson,
@@ -486,6 +678,7 @@ export async function syncTemplateToSesAction(input: SyncTemplateInput) {
   }
 
   const payload = parsed.data;
+  const normalizedSubject = decodeEscapedUnicode(payload.subject);
   const existingDraft = await db.query.templateDrafts.findFirst({
     where: and(
       eq(templateDrafts.sesTemplateName, payload.sesTemplateName),
@@ -498,7 +691,7 @@ export async function syncTemplateToSesAction(input: SyncTemplateInput) {
       new UpdateTemplateCommand({
         Template: {
           TemplateName: payload.sesTemplateName,
-          SubjectPart: payload.subject,
+          SubjectPart: normalizedSubject,
           HtmlPart: payload.htmlContent,
           TextPart: payload.textContent
         }
@@ -510,7 +703,7 @@ export async function syncTemplateToSesAction(input: SyncTemplateInput) {
         new CreateTemplateCommand({
           Template: {
             TemplateName: payload.sesTemplateName,
-            SubjectPart: payload.subject,
+            SubjectPart: normalizedSubject,
             HtmlPart: payload.htmlContent,
             TextPart: payload.textContent
           }
@@ -532,7 +725,7 @@ export async function syncTemplateToSesAction(input: SyncTemplateInput) {
         attachPreviewVariables(
           normalizeDesignJson(undefined, {
             sesTemplateName: payload.sesTemplateName,
-            subject: payload.subject,
+            subject: normalizedSubject,
             htmlContent: payload.htmlContent,
             textContent: payload.textContent
           }),
@@ -681,7 +874,7 @@ export async function resetTemplateDraftFromSesAction(
     const payload = {
       name: existingDraft?.name ?? sesTemplate.TemplateName,
       sesTemplateName: sesTemplate.TemplateName,
-      subject: sesTemplate.SubjectPart ?? "",
+      subject: decodeEscapedUnicode(sesTemplate.SubjectPart ?? ""),
       htmlContent: sesTemplate.HtmlPart ?? "",
       textContent: sesTemplate.TextPart ?? "",
       editorJson: undefined,
@@ -689,7 +882,7 @@ export async function resetTemplateDraftFromSesAction(
         attachPreviewVariables(
           normalizeDesignJson(existingDraft?.designJson ?? undefined, {
             sesTemplateName: sesTemplate.TemplateName,
-            subject: sesTemplate.SubjectPart ?? "",
+            subject: decodeEscapedUnicode(sesTemplate.SubjectPart ?? ""),
             htmlContent: sesTemplate.HtmlPart ?? "",
             textContent: sesTemplate.TextPart ?? ""
           }),

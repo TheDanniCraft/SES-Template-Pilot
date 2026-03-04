@@ -1,7 +1,6 @@
 import { notFound } from "next/navigation";
 import { TemplateEditorForm } from "@/components/template-editor-form";
 import { listBrandKits } from "@/lib/brand-kits-store";
-import { extractBodyHtml } from "@/lib/html-utils";
 import { getServerSessionUser } from "@/lib/server-auth";
 import {
   extractBrandKitId,
@@ -126,7 +125,7 @@ export default async function TemplateEditorPage({
             name: sesTemplate.data.TemplateName ?? id,
             sesTemplateName: sesTemplate.data.TemplateName ?? id,
             subject: sesTemplate.data.SubjectPart ?? "",
-            htmlContent: extractBodyHtml(sesTemplate.data.HtmlPart ?? ""),
+            htmlContent: sesTemplate.data.HtmlPart ?? "",
             textContent: sesTemplate.data.TextPart ?? "",
             editorJson: undefined,
             brandKitId: undefined,

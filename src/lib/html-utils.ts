@@ -12,6 +12,49 @@ export function extractBodyHtml(input: string) {
   return bodyMatch[1].trim();
 }
 
+export type HtmlDocumentShell = {
+  prefix: string;
+  body: string;
+  suffix: string;
+};
+
+export function parseHtmlDocumentShell(input: string): HtmlDocumentShell | null {
+  const raw = input ?? "";
+  if (!raw.trim()) {
+    return null;
+  }
+
+  const bodyOpenMatch = /<body\b[^>]*>/i.exec(raw);
+  if (!bodyOpenMatch || bodyOpenMatch.index === undefined) {
+    return null;
+  }
+
+  const bodyOpenEnd = bodyOpenMatch.index + bodyOpenMatch[0].length;
+  const afterBodyOpen = raw.slice(bodyOpenEnd);
+  const bodyCloseMatch = /<\/body\s*>/i.exec(afterBodyOpen);
+  if (!bodyCloseMatch || bodyCloseMatch.index === undefined) {
+    return null;
+  }
+
+  const bodyCloseStart = bodyOpenEnd + bodyCloseMatch.index;
+  return {
+    prefix: raw.slice(0, bodyOpenEnd),
+    body: raw.slice(bodyOpenEnd, bodyCloseStart),
+    suffix: raw.slice(bodyCloseStart)
+  };
+}
+
+export function mergeBodyIntoHtmlDocument(
+  bodyHtml: string,
+  shell: HtmlDocumentShell | null | undefined
+) {
+  if (!shell) {
+    return bodyHtml;
+  }
+
+  return `${shell.prefix}${bodyHtml}${shell.suffix}`;
+}
+
 export function sanitizeEditableHtml(input: string) {
   return (input || "")
     .replace(/<style[\s\S]*?<\/style>/gi, "")
