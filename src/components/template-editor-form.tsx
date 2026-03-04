@@ -26,6 +26,7 @@ import {
 import { Controller, useForm, useWatch } from "react-hook-form";
 import { toast } from "sonner";
 import {
+  AlertTriangle,
   Brush,
   Moon,
   RefreshCcw,
@@ -42,11 +43,17 @@ import {
 } from "@/lib/actions/templates";
 import {
   type BrandKit,
+  getBrandKitColorSchemeCss,
   getBrandKitById
 } from "@/lib/brand-kits";
 import { htmlToPlainText } from "@/lib/plain-text";
 import { renderTemplateVariables } from "@/lib/preview";
 import { normalizeDesignJson } from "@/lib/ses-template-json";
+import {
+  mergeBodyIntoHtmlDocument,
+  parseHtmlDocumentShell,
+  type HtmlDocumentShell
+} from "@/lib/html-utils";
 import {
   templateDraftSchema,
   type TemplateDraftInput
@@ -72,6 +79,73 @@ function toEditorJson(input: unknown): Record<string, unknown> | undefined {
     return undefined;
   }
   return input as Record<string, unknown>;
+}
+
+function hasEditorJson(input: unknown) {
+  const json = toEditorJson(input);
+  return Boolean(json && Object.keys(json).length > 0);
+}
+
+function isFullHtmlDocument(input: string | undefined) {
+  const value = (input ?? "").trim();
+  return /<!doctype\s+html/i.test(value) || /<html[\s>]/i.test(value) || /<head[\s>]/i.test(value);
+}
+
+function shouldLockBuilderMode(editorJson: unknown, html: string | undefined) {
+  return !hasEditorJson(editorJson) && isFullHtmlDocument(html);
+}
+
+const COLOR_BRIDGE_STYLE_ID = "ses-brand-kit-color-bridge";
+
+function stripColorBridgeVars(input: string) {
+  return (input || "").replace(
+    /var\(\s*--ses-[a-z0-9-]+\s*,\s*([^)]+)\)/gi,
+    "$1"
+  );
+}
+
+function injectColorBridgeStyle(
+  documentHtml: string,
+  brandKit: BrandKit | null | undefined
+) {
+  if (!documentHtml) {
+    return documentHtml;
+  }
+
+  const css = getBrandKitColorSchemeCss(brandKit);
+  const existingPattern = new RegExp(
+    `<style[^>]*id=["']${COLOR_BRIDGE_STYLE_ID}["'][^>]*>[\\s\\S]*?<\\/style>`,
+    "i"
+  );
+  if (!css.trim()) {
+    return documentHtml
+      .replace(existingPattern, "")
+      .replace(
+        /<style[^>]*id=["']ses-editor-color-bridge["'][^>]*>[\s\S]*?<\/style>/i,
+        ""
+      );
+  }
+
+  const styleTag = `<style id="${COLOR_BRIDGE_STYLE_ID}">${css}</style>`;
+  if (existingPattern.test(documentHtml)) {
+    return documentHtml.replace(
+      existingPattern,
+      styleTag
+    );
+  }
+
+  if (/id=["']ses-editor-color-bridge["']/i.test(documentHtml)) {
+    return documentHtml.replace(
+      /<style[^>]*id=["']ses-editor-color-bridge["'][^>]*>[\s\S]*?<\/style>/i,
+      styleTag
+    );
+  }
+
+  if (/<\/head>/i.test(documentHtml)) {
+    return documentHtml.replace(/<\/head>/i, `${styleTag}</head>`);
+  }
+
+  return documentHtml;
 }
 
 function extractTemplateVariableKeys(...sources: Array<string | undefined>) {
@@ -175,30 +249,45 @@ export function TemplateEditorForm({
   initialValues,
   brandKits
 }: TemplateEditorFormProps) {
+  const initialBrandKitId = (initialValues.brandKitId ?? "").trim();
+  const initialDocumentShell = parseHtmlDocumentShell(initialValues.htmlContent ?? "");
+  const initialBuilderLocked = shouldLockBuilderMode(
+    initialValues.editorJson,
+    initialValues.htmlContent
+  );
   const router = useRouter();
   const pathname = usePathname();
   const [isPending, startTransition] = useTransition();
   const [editorMode, setEditorMode] = useState<"html" | "text">("html");
   const [previewMode, setPreviewMode] = useState<"html" | "text">("html");
-  const [htmlEditMode, setHtmlEditMode] = useState<"builder" | "raw">("builder");
+  const [htmlEditMode, setHtmlEditMode] = useState<"builder" | "raw">(() =>
+    initialBuilderLocked
+      ? "raw"
+      : "builder"
+  );
+  const [builderUnlocked, setBuilderUnlocked] = useState(!initialBuilderLocked);
   const [previewTheme, setPreviewTheme] = useState<"dark" | "light">("dark");
   const [autoPlainText, setAutoPlainText] = useState(true);
   const [editorRefreshToken, setEditorRefreshToken] = useState(0);
   const [appliedBrandKitId, setAppliedBrandKitId] = useState<string | undefined>(
-    initialValues.brandKitId
+    initialBrandKitId || undefined
   );
+  const [pendingBuilderBootstrap, setPendingBuilderBootstrap] = useState(false);
   const [builderSeed, setBuilderSeed] = useState(() => ({
-    html: initialValues.htmlContent ?? "",
+    html: initialDocumentShell?.body ?? (initialValues.htmlContent ?? ""),
     contentJson: toEditorJson(initialValues.editorJson)
   }));
-  const [liveBuilderHtml, setLiveBuilderHtml] = useState(builderSeed.html);
+  const [liveBuilderHtml, setLiveBuilderHtml] = useState(initialValues.htmlContent ?? "");
   const mailyEditorRef = useRef<MailyEditorHandle | null>(null);
+  const preservedDocumentShellRef = useRef<HtmlDocumentShell | null>(
+    initialDocumentShell
+  );
 
   const form = useForm<TemplateDraftInput>({
     resolver: zodResolver(templateDraftSchema),
     defaultValues: {
       ...initialValues,
-      brandKitId: initialValues.brandKitId ?? "",
+      brandKitId: initialBrandKitId,
       previewVariables: initialValues.previewVariables ?? DEFAULT_PREVIEW_VARIABLES
     }
   });
@@ -243,6 +332,34 @@ export function TemplateEditorForm({
   );
   const selectedBrandKitId = (values.brandKitId ?? "").trim() || undefined;
   const hasUnappliedBrandKitSelection = selectedBrandKitId !== appliedBrandKitId;
+  const isBuilderLocked = initialBuilderLocked && !builderUnlocked;
+  const shouldPersistEditorJson = !initialBuilderLocked || builderUnlocked;
+
+  useEffect(() => {
+    if (selectedBrandKit) {
+      return;
+    }
+
+    const currentHtml = form.getValues("htmlContent") ?? "";
+    const cleanedHtml = injectColorBridgeStyle(
+      stripColorBridgeVars(currentHtml),
+      null
+    );
+    if (cleanedHtml === currentHtml) {
+      return;
+    }
+
+    form.setValue("htmlContent", cleanedHtml, { shouldDirty: false });
+    setLiveBuilderHtml(cleanedHtml);
+    const parsed = parseHtmlDocumentShell(cleanedHtml);
+    if (parsed) {
+      preservedDocumentShellRef.current = parsed;
+      setBuilderSeed((current) => ({
+        ...current,
+        html: parsed.body
+      }));
+    }
+  }, [form, selectedBrandKit]);
 
   useEffect(() => {
     const allowed = new Set(detectedVariableKeys);
@@ -296,6 +413,17 @@ export function TemplateEditorForm({
     }
   }, [autoPlainText, form, values.htmlContent, values.textContent]);
 
+  useEffect(() => {
+    if (htmlEditMode !== "raw") {
+      return;
+    }
+
+    const parsed = parseHtmlDocumentShell(values.htmlContent ?? "");
+    if (parsed) {
+      preservedDocumentShellRef.current = parsed;
+    }
+  }, [htmlEditMode, values.htmlContent]);
+
   const previewSourceHtml =
     htmlEditMode === "builder" ? liveBuilderHtml : (values.htmlContent ?? "");
   const previewHtml = useMemo(() => {
@@ -340,38 +468,76 @@ export function TemplateEditorForm({
     normalizedHtml.length >= 2 &&
     normalizedText.length >= 2;
 
+  const mergeWithPreservedDocumentShell = useCallback(
+    (nextHtml: string, brandKitOverride?: BrandKit | null) => {
+      const activeBrandKit =
+        brandKitOverride === undefined ? selectedBrandKit : brandKitOverride;
+      const nextDocument = activeBrandKit ? nextHtml : stripColorBridgeVars(nextHtml);
+      const parsedNextDocument = parseHtmlDocumentShell(nextDocument);
+      if (parsedNextDocument) {
+        return injectColorBridgeStyle(nextDocument, activeBrandKit);
+      }
+
+      const shell = preservedDocumentShellRef.current;
+      if (!shell) {
+        return injectColorBridgeStyle(nextDocument, activeBrandKit);
+      }
+
+      const nextBody = nextDocument;
+      const merged = mergeBodyIntoHtmlDocument(nextBody, shell);
+      return injectColorBridgeStyle(merged, activeBrandKit);
+    },
+    [selectedBrandKit]
+  );
+
+  const toBuilderEditableHtml = useCallback((nextHtml: string) => {
+    const parsed = parseHtmlDocumentShell(nextHtml);
+    if (parsed) {
+      preservedDocumentShellRef.current = parsed;
+      return parsed.body;
+    }
+    return nextHtml;
+  }, []);
+
   const flushBuilderSnapshot = useCallback(async () => {
     const snapshot = await mailyEditorRef.current?.flush();
     if (!snapshot) {
       return null;
     }
 
-    setLiveBuilderHtml(snapshot.html);
-    form.setValue("htmlContent", snapshot.html, { shouldDirty: true });
+    const mergedHtml = mergeWithPreservedDocumentShell(snapshot.html);
+    setLiveBuilderHtml(mergedHtml);
+    form.setValue("htmlContent", mergedHtml, { shouldDirty: true });
     form.setValue("editorJson", snapshot.contentJson, { shouldDirty: true });
-    return snapshot;
-  }, [form]);
+    return {
+      html: mergedHtml,
+      contentJson: snapshot.contentJson
+    };
+  }, [form, mergeWithPreservedDocumentShell]);
 
   const setHtmlEditModeWithSync = useCallback(
     (nextMode: "builder" | "raw") => {
       void (async () => {
         if (nextMode === "raw") {
-          await flushBuilderSnapshot();
+          if (hasEditorJson(form.getValues("editorJson"))) {
+            await flushBuilderSnapshot();
+          }
           setHtmlEditMode("raw");
           return;
         }
 
         const nextHtml = form.getValues("htmlContent") ?? "";
+        const builderHtml = toBuilderEditableHtml(nextHtml);
         setBuilderSeed({
-          html: nextHtml,
+          html: builderHtml,
           contentJson: toEditorJson(form.getValues("editorJson"))
         });
-        setLiveBuilderHtml(nextHtml);
+        setLiveBuilderHtml(mergeWithPreservedDocumentShell(builderHtml));
         setEditorRefreshToken((current) => current + 1);
         setHtmlEditMode("builder");
       })();
     },
-    [flushBuilderSnapshot, form]
+    [flushBuilderSnapshot, form, mergeWithPreservedDocumentShell, toBuilderEditableHtml]
   );
 
   const onSaveLocal = useCallback(() => {
@@ -384,7 +550,11 @@ export function TemplateEditorForm({
 
     startTransition(async () => {
       const payload = form.getValues();
-      if (htmlEditMode === "builder") {
+      if (!shouldPersistEditorJson) {
+        payload.editorJson = undefined;
+        form.setValue("editorJson", undefined, { shouldDirty: true });
+      }
+      if (htmlEditMode === "builder" && hasEditorJson(payload.editorJson)) {
         const snapshot = await flushBuilderSnapshot();
         if (!snapshot) {
           toast.error("Failed to compile template HTML. Please try again.");
@@ -422,7 +592,11 @@ export function TemplateEditorForm({
 
     startTransition(async () => {
       const payload = form.getValues();
-      if (htmlEditMode === "builder") {
+      if (!shouldPersistEditorJson) {
+        payload.editorJson = undefined;
+        form.setValue("editorJson", undefined, { shouldDirty: true });
+      }
+      if (htmlEditMode === "builder" && hasEditorJson(payload.editorJson)) {
         const snapshot = await flushBuilderSnapshot();
         if (!snapshot) {
           toast.error("Failed to compile template HTML. Please try again.");
@@ -468,13 +642,14 @@ export function TemplateEditorForm({
       form.setValue("editorJson", nextJson, { shouldDirty: true });
 
       const fallbackHtml = form.getValues("htmlContent") ?? "";
-      const nextHtml =
+      const renderedHtml =
         nextJson && Object.keys(nextJson).length > 0
           ? await renderEditorJsonToHtml(nextJson, selected)
           : fallbackHtml;
+      const nextHtml = mergeWithPreservedDocumentShell(renderedHtml, selected);
       form.setValue("htmlContent", nextHtml, { shouldDirty: true });
       setBuilderSeed({
-        html: nextHtml,
+        html: toBuilderEditableHtml(nextHtml),
         contentJson: nextJson
       });
       setLiveBuilderHtml(nextHtml);
@@ -515,15 +690,28 @@ export function TemplateEditorForm({
 
       if (result.template) {
         form.reset(result.template);
-        const resetBrandKitId = (result.template.brandKitId ?? "").trim();
-        form.setValue("brandKitId", resetBrandKitId, { shouldDirty: false });
-        setAppliedBrandKitId(resetBrandKitId || undefined);
+        form.setValue("brandKitId", "", { shouldDirty: false });
+        setAppliedBrandKitId(undefined);
+        const lockAfterReset = shouldLockBuilderMode(
+          result.template.editorJson,
+          result.template.htmlContent ?? ""
+        );
+        setPendingBuilderBootstrap(false);
+        setBuilderUnlocked(!lockAfterReset);
+        if (lockAfterReset) {
+          setEditorMode("html");
+          setHtmlEditMode("raw");
+        }
+        const parsedResetHtml = parseHtmlDocumentShell(result.template.htmlContent ?? "");
+        if (parsedResetHtml) {
+          preservedDocumentShellRef.current = parsedResetHtml;
+        }
         const nextSeed = {
-          html: result.template.htmlContent ?? "",
+          html: parsedResetHtml?.body ?? (result.template.htmlContent ?? ""),
           contentJson: toEditorJson(result.template.editorJson)
         };
         setBuilderSeed(nextSeed);
-        setLiveBuilderHtml(nextSeed.html);
+        setLiveBuilderHtml(result.template.htmlContent ?? "");
         setEditorRefreshToken((current) => current + 1);
       }
 
@@ -570,6 +758,51 @@ export function TemplateEditorForm({
       router.replace("/app/templates");
     });
   };
+
+  useEffect(() => {
+    if (!pendingBuilderBootstrap || htmlEditMode !== "builder") {
+      return;
+    }
+
+    let cancelled = false;
+    let attempts = 0;
+
+    const bootstrap = async () => {
+      if (cancelled) {
+        return;
+      }
+
+      if (hasEditorJson(form.getValues("editorJson"))) {
+        setPendingBuilderBootstrap(false);
+        return;
+      }
+
+      const snapshot = await flushBuilderSnapshot();
+      if (cancelled) {
+        return;
+      }
+      if (snapshot) {
+        setPendingBuilderBootstrap(false);
+        return;
+      }
+
+      if (attempts >= 8) {
+        setPendingBuilderBootstrap(false);
+        return;
+      }
+
+      attempts += 1;
+      setTimeout(() => {
+        void bootstrap();
+      }, 70);
+    };
+
+    void bootstrap();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [flushBuilderSnapshot, form, htmlEditMode, pendingBuilderBootstrap]);
 
   return (
     <div
@@ -643,64 +876,90 @@ export function TemplateEditorForm({
         </CardHeader>
         <CardBody className="space-y-4">
           <Tabs
+            className="w-full"
+            fullWidth
             aria-label="Editor mode"
-            selectedKey={editorMode}
-            onSelectionChange={(key) => setEditorMode(key as "html" | "text")}
+            selectedKey={editorMode === "text" ? "text" : htmlEditMode}
+            onSelectionChange={(key) => {
+              if (key === "text") {
+                setEditorMode("text");
+                return;
+              }
+              if (key === "builder" && isBuilderLocked) {
+                setEditorMode("html");
+                setHtmlEditMode("raw");
+                return;
+              }
+              setEditorMode("html");
+              setHtmlEditModeWithSync(key as "builder" | "raw");
+            }}
           >
-            <Tab key="html" title="HTML Editor">
+            <Tab key="builder" isDisabled={isBuilderLocked} title="Builder">
+              {isBuilderLocked ? (
+                <div className="rounded-xl border border-amber-300/40 bg-amber-500/10 p-4 text-sm text-amber-100">
+                  Builder is locked for this template. Open it from Raw HTML with "Load Editor Anyway".
+                </div>
+              ) : (
+                <MailyEditor
+                  ref={mailyEditorRef}
+                  contentJson={builderSeed.contentJson}
+                  brandKit={selectedBrandKit}
+                  emitInitialSnapshot={initialBuilderLocked && builderUnlocked}
+                  refreshToken={editorRefreshToken}
+                  surfaceTheme="light"
+                  onChange={({ html, contentJson }) => {
+                    const mergedHtml = mergeWithPreservedDocumentShell(html);
+                    setLiveBuilderHtml(mergedHtml);
+                    form.setValue("editorJson", contentJson, { shouldDirty: true });
+                    form.setValue("htmlContent", mergedHtml, {
+                      shouldDirty: true
+                    });
+                  }}
+                  value={builderSeed.html}
+                />
+              )}
+            </Tab>
+            <Tab key="raw" title="Raw HTML">
               <div className="space-y-3">
-                <div className="grid grid-cols-2 gap-2">
-                  <Button
-                    color={htmlEditMode === "builder" ? "primary" : "default"}
-                    type="button"
-                    variant="flat"
-                    onPress={() => setHtmlEditModeWithSync("builder")}
-                  >
-                    Builder
-                  </Button>
-                  <Button
-                    color={htmlEditMode === "raw" ? "primary" : "default"}
-                    type="button"
-                    variant="flat"
-                    onPress={() => setHtmlEditModeWithSync("raw")}
-                  >
-                    Raw HTML
-                  </Button>
-                </div>
-                <div
-                  aria-hidden={htmlEditMode !== "builder"}
-                  className={htmlEditMode === "builder" ? "block" : "hidden"}
-                >
-                  <MailyEditor
-                    ref={mailyEditorRef}
-                    contentJson={builderSeed.contentJson}
-                    brandKit={selectedBrandKit}
-                    refreshToken={editorRefreshToken}
-                    surfaceTheme="light"
-                    onChange={({ html, contentJson }) => {
-                      setLiveBuilderHtml(html);
-                      form.setValue("editorJson", contentJson, { shouldDirty: true });
-                      form.setValue("htmlContent", html, {
-                        shouldDirty: true
-                      });
-                    }}
-                    value={builderSeed.html}
-                  />
-                </div>
-                <div
-                  aria-hidden={htmlEditMode !== "raw"}
-                  className={htmlEditMode === "raw" ? "block" : "hidden"}
-                >
-                  <Textarea
-                    {...form.register("htmlContent")}
-                    classNames={{
-                      input: "font-mono text-sm"
-                    }}
-                    description="Source editor. You can paste full HTML here."
-                    label="Raw HTML"
-                    minRows={18}
-                  />
-                </div>
+                {isBuilderLocked ? (
+                  <div className="rounded-xl border border-amber-300/40 bg-amber-500/10 p-3 text-xs text-amber-100">
+                    <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                      <div className="min-w-0 space-y-1">
+                        <p className="flex items-center gap-2 font-semibold">
+                          <AlertTriangle className="h-4 w-4" />
+                          Builder locked for this template
+                        </p>
+                        <p className="text-amber-100/85">
+                          This template was not created with the Builder. Opening Builder can
+                          rewrite layout/CSS. Raw HTML is kept as the safe source.
+                        </p>
+                      </div>
+                      <Button
+                        className="h-10 w-full shrink-0 sm:w-auto sm:min-w-[180px]"
+                        color="warning"
+                        type="button"
+                        variant="flat"
+                        onPress={() => {
+                          setBuilderUnlocked(true);
+                          setPendingBuilderBootstrap(true);
+                          setEditorMode("html");
+                          setHtmlEditModeWithSync("builder");
+                        }}
+                      >
+                        Load Editor Anyway
+                      </Button>
+                    </div>
+                  </div>
+                ) : null}
+                <Textarea
+                  {...form.register("htmlContent")}
+                  classNames={{
+                    input: "font-mono text-sm"
+                  }}
+                  description="Source editor. You can paste full HTML here."
+                  label="Raw HTML"
+                  minRows={18}
+                />
               </div>
             </Tab>
             <Tab key="text" title="Plain Text">
