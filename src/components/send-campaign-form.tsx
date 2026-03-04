@@ -13,11 +13,12 @@ import {
   SelectItem,
   Tab,
   Tabs,
+  Tooltip,
   Textarea
 } from "@heroui/react";
 import { Controller, useForm, useWatch } from "react-hook-form";
 import { toast } from "sonner";
-import { MailCheck, Moon, Sun, Upload } from "lucide-react";
+import { Info, MailCheck, Moon, Sun, Upload } from "lucide-react";
 import { sendCampaignAction } from "@/lib/actions/campaign";
 import type { ContactBook, RecipientVariablesMap } from "@/lib/contact-books";
 import {
@@ -40,6 +41,7 @@ type TemplateOption = {
 type SendCampaignFormProps = {
   contactBooks: ContactBook[];
   templates: TemplateOption[];
+  sourceEmail: string | null;
 };
 
 const SEND_FORM_STORAGE_KEY = "ses-ui-send-form-v1";
@@ -133,7 +135,11 @@ function syncTemplateDataMapForRecipients(
   };
 }
 
-export function SendCampaignForm({ contactBooks, templates }: SendCampaignFormProps) {
+export function SendCampaignForm({
+  contactBooks,
+  templates,
+  sourceEmail
+}: SendCampaignFormProps) {
   const [isPending, startTransition] = useTransition();
   const [previewMode, setPreviewMode] = useState<"html" | "text">("html");
   const [device, setDevice] = useState<"desktop" | "mobile">("desktop");
@@ -378,6 +384,11 @@ export function SendCampaignForm({ contactBooks, templates }: SendCampaignFormPr
     selectedRecipientValues
   );
 
+  const previewSubject = renderTemplateVariables(
+    selectedTemplate?.subject ?? "No subject",
+    selectedRecipientValues
+  );
+
   const previewText = renderTemplateVariables(
     selectedTemplate?.text ?? "Select a template",
     selectedRecipientValues
@@ -566,7 +577,20 @@ export function SendCampaignForm({ contactBooks, templates }: SendCampaignFormPr
             name="templateName"
             render={({ field }) => (
               <Select
-                label="Template"
+                label={
+                  <span className="inline-flex items-center gap-1">
+                    Template
+                    <Tooltip content="Only templates uploaded to SES are listed here.">
+                      <span
+                        aria-label="Templates shown are synced to SES"
+                        className="cursor-help text-default-400"
+                        role="img"
+                      >
+                        <Info className="h-3.5 w-3.5" />
+                      </span>
+                    </Tooltip>
+                  </span>
+                }
                 selectedKeys={field.value ? new Set([field.value]) : new Set()}
                 onSelectionChange={(selection) => {
                   field.onChange(firstSelectionKey(selection));
@@ -715,31 +739,99 @@ export function SendCampaignForm({ contactBooks, templates }: SendCampaignFormPr
           </Tabs>
 
           <div
-            className={`mx-auto w-full rounded-2xl p-3 ${
-              previewTheme === "dark"
-                ? "border border-white/20 bg-slate-900"
-                : "border border-slate-300 bg-slate-100"
-            } ${device === "mobile" ? "max-w-[340px]" : ""}`}
+            className={`mx-auto w-full ${
+              device === "mobile" ? "max-w-[360px]" : "max-w-4xl"
+            }`}
           >
             <div
-              className={`rounded-xl p-3 text-sm ${
+              className={`overflow-hidden rounded-2xl border ${
                 previewTheme === "dark"
-                  ? "border border-white/15 bg-slate-950 text-slate-100"
-                  : "border border-slate-300 bg-white text-black"
+                  ? "border-white/15 bg-slate-950 text-slate-100"
+                  : "border-slate-300 bg-white text-slate-900"
               }`}
             >
+              {device === "desktop" ? (
+                <div
+                  className={`border-b px-4 py-3 ${
+                    previewTheme === "dark"
+                      ? "border-white/10 bg-slate-900"
+                      : "border-slate-200 bg-slate-100"
+                  }`}
+                >
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="flex items-center gap-1.5">
+                      <span className="h-2.5 w-2.5 rounded-full bg-rose-400/90" />
+                      <span className="h-2.5 w-2.5 rounded-full bg-amber-300/90" />
+                      <span className="h-2.5 w-2.5 rounded-full bg-emerald-400/90" />
+                    </div>
+                    <p
+                      className={`text-xs font-medium ${
+                        previewTheme === "dark"
+                          ? "text-slate-300"
+                          : "text-slate-600"
+                      }`}
+                    >
+                      Email Client Mockup
+                    </p>
+                  </div>
+                </div>
+              ) : (
+                <div
+                  className={`border-b px-4 py-2 ${
+                    previewTheme === "dark"
+                      ? "border-white/10 bg-slate-900"
+                      : "border-slate-200 bg-slate-100"
+                  }`}
+                >
+                  <div className="flex items-center justify-between text-[11px] font-medium">
+                    <span>9:41</span>
+                    <span
+                      className={
+                        previewTheme === "dark"
+                          ? "text-slate-300"
+                          : "text-slate-500"
+                      }
+                    >
+                      Preview
+                    </span>
+                    <span>5G</span>
+                  </div>
+                </div>
+              )}
+              <div
+                className={`border-b px-4 py-3 text-xs ${
+                  previewTheme === "dark"
+                    ? "border-white/10 bg-slate-900/60"
+                    : "border-slate-200 bg-slate-50"
+                }`}
+              >
+                <p className="truncate">
+                  <span className="font-semibold">From:</span>{" "}
+                  {sourceEmail || "not-configured@example.com"}
+                </p>
+                <p className="truncate">
+                  <span className="font-semibold">To:</span>{" "}
+                  {activeRecipient || "recipient@example.com"}
+                </p>
+                <p className="mt-1 truncate">
+                  <span className="font-semibold">Subject:</span>{" "}
+                  {previewSubject || "No subject"}
+                </p>
+              </div>
               {previewMode === "html" ? (
                 <HtmlPreviewFrame
-                  className={`min-h-[440px] w-full rounded-lg ${
+                  className={`min-h-[440px] w-full ${
                     previewTheme === "dark"
-                      ? "border border-white/20"
-                      : "border border-slate-200"
+                      ? "bg-slate-950"
+                      : "bg-white"
                   }`}
                   html={previewHtml}
                   theme={previewTheme}
                 />
               ) : (
-                <pre className="whitespace-pre-wrap">{previewText}</pre>
+                <pre className="min-h-[440px] whitespace-pre-wrap p-4 text-sm">
+                  {previewText}
+                </pre>
               )}
             </div>
           </div>
