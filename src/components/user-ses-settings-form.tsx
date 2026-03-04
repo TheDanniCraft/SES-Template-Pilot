@@ -4,7 +4,10 @@ import { useCallback, useState, useTransition } from "react";
 import { Button, Card, CardBody, CardHeader, Input } from "@heroui/react";
 import { Save } from "lucide-react";
 import { toast } from "sonner";
-import { saveUserSesConfigAction } from "@/lib/actions/settings";
+import {
+  saveUserSesConfigAction,
+  sendSesTestEmailAction
+} from "@/lib/actions/settings";
 import { useSaveShortcut } from "@/hooks/use-save-shortcut";
 import type { UserSesConfig } from "@/lib/user-ses";
 
@@ -17,7 +20,9 @@ export function UserSesSettingsForm({
   initialConfig,
   loadError = null
 }: UserSesSettingsFormProps) {
-  const [isPending, startTransition] = useTransition();
+  const [isSavePending, startSaveTransition] = useTransition();
+  const [isTestPending, startTestTransition] = useTransition();
+  const [scopeWarning, setScopeWarning] = useState<string | null>(null);
   const [form, setForm] = useState({
     awsRegion: initialConfig.awsRegion ?? "",
     accessKeyId: initialConfig.accessKeyId ?? "",
@@ -27,6 +32,7 @@ export function UserSesSettingsForm({
   });
 
   const updateField = (field: keyof typeof form, value: string) => {
+    setScopeWarning(null);
     setForm((current) => ({
       ...current,
       [field]: value
@@ -34,19 +40,40 @@ export function UserSesSettingsForm({
   };
 
   const onSave = useCallback(() => {
-    startTransition(async () => {
+    startSaveTransition(async () => {
       const result = await saveUserSesConfigAction(form);
+      if (!result.success) {
+        setScopeWarning(null);
+        toast.error(result.error);
+        return;
+      }
+      toast.success("SES settings saved and validated");
+      setScopeWarning(result.warning ?? null);
+      if (result.warning) {
+        toast.warning(result.warning);
+      }
+    });
+  }, [form, startSaveTransition]);
+
+  const onSendTestEmail = useCallback(() => {
+    startTestTransition(async () => {
+      const result = await sendSesTestEmailAction(form);
       if (!result.success) {
         toast.error(result.error);
         return;
       }
-      toast.success("SES settings saved");
+      toast.success(
+        result.messageId
+          ? `Test email sent to ${result.recipient} (${result.messageId})`
+          : `Test email sent to ${result.recipient}`
+      );
     });
-  }, [form, startTransition]);
+  }, [form, startTestTransition]);
 
-  useSaveShortcut(onSave, !isPending);
+  useSaveShortcut(onSave, !isSavePending && !isTestPending);
 
   const onClear = () => {
+    setScopeWarning(null);
     setForm({
       awsRegion: "",
       accessKeyId: "",
@@ -71,6 +98,11 @@ export function UserSesSettingsForm({
         {loadError ? (
           <div className="rounded-large border border-danger/40 bg-danger/10 p-3 text-xs text-danger-200">
             {loadError}
+          </div>
+        ) : null}
+        {scopeWarning ? (
+          <div className="rounded-large border border-warning/40 bg-warning/10 p-3 text-xs text-warning-200">
+            {scopeWarning}
           </div>
         ) : null}
 
@@ -114,13 +146,25 @@ export function UserSesSettingsForm({
         <div className="flex flex-wrap gap-2">
           <Button
             color="primary"
-            isLoading={isPending}
+            isLoading={isSavePending}
             startContent={<Save className="h-4 w-4" />}
             onPress={onSave}
           >
-            Save SES Settings
+            Save & Validate
           </Button>
-          <Button isDisabled={isPending} variant="flat" onPress={onClear}>
+          <Button
+            isDisabled={isSavePending || isTestPending}
+            isLoading={isTestPending}
+            variant="flat"
+            onPress={onSendTestEmail}
+          >
+            Send Test Email
+          </Button>
+          <Button
+            isDisabled={isSavePending || isTestPending}
+            variant="flat"
+            onPress={onClear}
+          >
             Clear Form
           </Button>
         </div>
