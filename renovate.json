@@ -4,6 +4,9 @@
     "config:recommended"
   ],
   "timezone": "Europe/Berlin",
+  "schedule": [
+    "before 4am on monday"
+  ],
   "labels": [
     "dependencies"
   ],
@@ -38,6 +41,8 @@
       "matchUpdateTypes": [
         "major"
       ],
+      "separateMajorMinor": true,
+      "groupName": "major updates",
       "automerge": false
     },
     {
@@ -47,7 +52,8 @@
         "pin",
         "digest"
       ],
-      "automerge": true
+      "groupName": "weekly non-major updates",
+      "automerge": false
     }
   ]
 }
