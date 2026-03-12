@@ -1,14 +1,40 @@
-import { and, count, eq, gt, isNull } from "drizzle-orm";
+import { randomBytes, scryptSync, timingSafeEqual } from "node:crypto";
+import { and, count, eq, gt, isNotNull, isNull } from "drizzle-orm";
 import { createSessionCookie, parseSessionCookie } from "@/lib/auth-cookie";
 import { createRandomToken, sha256Base64Url } from "@/lib/auth-tokens";
 import { db } from "@/lib/db";
-import { authMagicLinks, authSessions, nowSql, users } from "@/lib/schema";
+import {
+  authSessions,
+  nowSql,
+  organizationInvites,
+  users
+} from "@/lib/schema";
+import { addUserToOrganization } from "@/lib/org";
+import { encryptToken } from "@/lib/token-crypto";
 
-const MAGIC_LINK_TTL_MS = 15 * 60 * 1000;
 const SESSION_MAX_AGE_SECONDS = 60 * 60 * 24 * 7;
-const MAGIC_LINK_WINDOW_MS = 10 * 60 * 1000;
-const MAGIC_LINK_MAX_PER_WINDOW = 5;
-const MAGIC_LINK_GLOBAL_MAX_PER_WINDOW = 100;
+const INVITE_TTL_MS = 1000 * 60 * 60 * 48;
+
+function hashPassword(password: string) {
+  const salt = randomBytes(16).toString("hex");
+  const derived = scryptSync(password, salt, 64).toString("hex");
+  return `scrypt:${salt}:${derived}`;
+}
+
+function verifyPassword(password: string, storedHash: string) {
+  const parts = storedHash.split(":");
+  if (parts.length !== 3 || parts[0] !== "scrypt") {
+    return false;
+  }
+
+  const [, salt, expectedHex] = parts;
+  const actual = scryptSync(password, salt, 64);
+  const expected = Buffer.from(expectedHex, "hex");
+  if (actual.length !== expected.length) {
+    return false;
+  }
+  return timingSafeEqual(actual, expected);
+}
 
 function normalizeEmail(email: string) {
   return email.trim().toLowerCase();
@@ -37,102 +63,225 @@ export async function findOrCreateUserByEmail(rawEmail: string) {
   return created;
 }
 
-export async function createMagicLinkForEmail(
-  email: string,
-  appBaseUrl: string,
-  nonce: string
-) {
-  const user = await findOrCreateUserByEmail(email);
-  const windowStart = new Date(Date.now() - MAGIC_LINK_WINDOW_MS);
-  const [globalRecentCount] = await db
-    .select({ value: count() })
-    .from(authMagicLinks)
-    .where(gt(authMagicLinks.createdAt, windowStart));
-
-  if ((globalRecentCount?.value ?? 0) >= MAGIC_LINK_GLOBAL_MAX_PER_WINDOW) {
-    throw new Error("Too many login links are being requested right now. Try again later.");
-  }
-
-  const [recentCount] = await db
-    .select({ value: count() })
-    .from(authMagicLinks)
-    .where(and(eq(authMagicLinks.userId, user.id), gt(authMagicLinks.createdAt, windowStart)));
-
-  if ((recentCount?.value ?? 0) >= MAGIC_LINK_MAX_PER_WINDOW) {
-    throw new Error("Too many login links requested. Please wait a few minutes.");
-  }
-
-  const token = createRandomToken(32);
-  const tokenHash = await sha256Base64Url(token);
-  const expiresAt = new Date(Date.now() + MAGIC_LINK_TTL_MS);
-
-  await db.insert(authMagicLinks).values({
-    userId: user.id,
-    tokenHash,
-    expiresAt
-  });
-
-  return {
-    user,
-    token,
-    magicLink: `${appBaseUrl}/login/verify?token=${encodeURIComponent(token)}&nonce=${encodeURIComponent(nonce)}`,
-    expiresAt
-  };
+export async function countUsers() {
+  const [result] = await db.select({ value: count() }).from(users);
+  return result?.value ?? 0;
 }
 
-export async function consumeMagicLinkToken(token: string) {
-  const normalizedToken = token.trim();
-  if (!normalizedToken) {
-    return null;
-  }
+export async function countUsersWithPassword() {
+  const [result] = await db
+    .select({ value: count() })
+    .from(users)
+    .where(isNotNull(users.passwordHash));
+  return result?.value ?? 0;
+}
 
-  const tokenHash = await sha256Base64Url(normalizedToken);
-  const [magicLinkRow] = await db
-    .select({
-      id: authMagicLinks.id,
-      userId: authMagicLinks.userId,
-      userEmail: users.email
+export async function getUserByEmail(rawEmail: string) {
+  const email = normalizeEmail(rawEmail);
+  const [user] = await db.select().from(users).where(eq(users.email, email)).limit(1);
+  return user ?? null;
+}
+
+export async function createUserWithPassword(rawEmail: string, password: string) {
+  const email = normalizeEmail(rawEmail);
+  const defaultName = email.split("@")[0]?.trim() || null;
+  const [created] = await db
+    .insert(users)
+    .values({
+      email,
+      name: defaultName,
+      passwordHash: hashPassword(password)
     })
-    .from(authMagicLinks)
-    .innerJoin(users, eq(users.id, authMagicLinks.userId))
-    .where(
-      and(
-        eq(authMagicLinks.tokenHash, tokenHash),
-        isNull(authMagicLinks.usedAt),
-        gt(authMagicLinks.expiresAt, new Date())
-      )
-    )
-    .limit(1);
+    .returning();
+  return created;
+}
 
-  if (!magicLinkRow) {
-    return null;
+export async function createOrUpgradeUserWithPassword(rawEmail: string, password: string) {
+  const email = normalizeEmail(rawEmail);
+  const existing = await getUserByEmail(email);
+  if (!existing) {
+    return createUserWithPassword(email, password);
   }
 
-  await db
-    .update(authMagicLinks)
+  const [updated] = await db
+    .update(users)
     .set({
-      usedAt: nowSql
+      passwordHash: hashPassword(password),
+      updatedAt: nowSql
     })
-    .where(eq(authMagicLinks.id, magicLinkRow.id));
+    .where(eq(users.id, existing.id))
+    .returning();
 
+  return updated;
+}
+
+async function createSessionForUser(userId: string) {
   const sessionToken = createRandomToken(32);
   const sessionHash = await sha256Base64Url(sessionToken);
   const expiresAt = new Date(Date.now() + SESSION_MAX_AGE_SECONDS * 1000);
 
   await db.insert(authSessions).values({
-    userId: magicLinkRow.userId,
+    userId,
     tokenHash: sessionHash,
     expiresAt
   });
 
   const cookieValue = await createSessionCookie(sessionToken, SESSION_MAX_AGE_SECONDS);
-
   return {
     cookieValue,
-    maxAgeSeconds: SESSION_MAX_AGE_SECONDS,
+    maxAgeSeconds: SESSION_MAX_AGE_SECONDS
+  };
+}
+
+export async function authenticateUserWithPassword(rawEmail: string, password: string) {
+  const user = await getUserByEmail(rawEmail);
+  if (!user || !user.passwordHash) {
+    return null;
+  }
+
+  if (!verifyPassword(password, user.passwordHash)) {
+    return null;
+  }
+
+  const session = await createSessionForUser(user.id);
+  return {
+    ...session,
     user: {
-      id: magicLinkRow.userId,
-      email: magicLinkRow.userEmail
+      id: user.id,
+      email: user.email
+    }
+  };
+}
+
+export async function updateUserPassword(userId: string, password: string) {
+  await db
+    .update(users)
+    .set({
+      passwordHash: hashPassword(password),
+      updatedAt: nowSql
+    })
+    .where(eq(users.id, userId));
+}
+
+export async function updateUserProfile(
+  userId: string,
+  input: { email: string; name: string | null }
+) {
+  await db
+    .update(users)
+    .set({
+      email: normalizeEmail(input.email),
+      name: input.name?.trim() || null,
+      updatedAt: nowSql
+    })
+    .where(eq(users.id, userId));
+}
+
+export async function createOrgInvite(
+  organizationId: string,
+  invitedByUserId: string,
+  rawEmail: string
+) {
+  const email = normalizeEmail(rawEmail);
+  await findOrCreateUserByEmail(email);
+  const token = createRandomToken(32);
+  const tokenHash = await sha256Base64Url(token);
+  const expiresAt = new Date(Date.now() + INVITE_TTL_MS);
+
+  await db.insert(organizationInvites).values({
+    organizationId,
+    invitedByUserId,
+    email,
+    tokenHash,
+    tokenEncrypted: encryptToken(token, `org-invite:${organizationId}:${email}`),
+    expiresAt
+  });
+
+  return {
+    token,
+    email,
+    expiresAt
+  };
+}
+
+export async function getInviteEmailForToken(token: string) {
+  const tokenHash = await sha256Base64Url(token.trim());
+  const [invite] = await db
+    .select({
+      email: organizationInvites.email
+    })
+    .from(organizationInvites)
+    .where(
+      and(
+        eq(organizationInvites.tokenHash, tokenHash),
+        isNull(organizationInvites.usedAt),
+        gt(organizationInvites.expiresAt, new Date())
+      )
+    )
+    .limit(1);
+
+  return invite?.email ?? null;
+}
+
+export async function consumeOrgInviteWithPassword(
+  token: string,
+  password: string,
+  name: string
+) {
+  const tokenHash = await sha256Base64Url(token.trim());
+  const [invite] = await db
+    .select()
+    .from(organizationInvites)
+    .where(
+      and(
+        eq(organizationInvites.tokenHash, tokenHash),
+        isNull(organizationInvites.usedAt),
+        gt(organizationInvites.expiresAt, new Date())
+      )
+    )
+    .limit(1);
+
+  if (!invite) {
+    return null;
+  }
+
+  let user = await getUserByEmail(invite.email);
+  if (!user) {
+    const [created] = await db
+      .insert(users)
+      .values({
+        email: invite.email,
+        name: name.trim() || invite.email.split("@")[0]?.trim() || null,
+        passwordHash: hashPassword(password)
+      })
+      .returning();
+    user = created;
+  } else {
+    await db
+      .update(users)
+      .set({
+        name: name.trim() || user.name,
+        passwordHash: hashPassword(password),
+        updatedAt: nowSql
+      })
+      .where(eq(users.id, user.id));
+  }
+
+  await addUserToOrganization(invite.organizationId, user.id, "member");
+
+  await db
+    .update(organizationInvites)
+    .set({
+      usedAt: nowSql
+    })
+    .where(eq(organizationInvites.id, invite.id));
+
+  const session = await createSessionForUser(user.id);
+  return {
+    ...session,
+    user: {
+      id: user.id,
+      email: user.email
     }
   };
 }

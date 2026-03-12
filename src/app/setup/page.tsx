@@ -1,47 +1,37 @@
-﻿import { LoginForm } from "@/components/login-form";
-import { redirect } from "next/navigation";
+﻿import { redirect } from "next/navigation";
+import { SetupForm } from "@/components/setup-form";
 import { countUsers } from "@/lib/auth-service";
-import { ensurePersonalOrgForUser } from "@/lib/org";
 import { getServerSessionUser } from "@/lib/server-auth";
 
 export const dynamic = "force-dynamic";
 
-type LoginPageProps = {
-  searchParams: Promise<{
-    error?: string;
-  }>;
-};
-
-export default async function LoginPage({ searchParams }: LoginPageProps) {
+export default async function SetupPage() {
   const usersCount = await countUsers();
-  if (usersCount === 0) {
-    redirect("/setup");
+  if (usersCount > 0) {
+    redirect("/login");
   }
 
   const user = await getServerSessionUser();
   if (user) {
-    await ensurePersonalOrgForUser(user);
     redirect("/app");
   }
-
-  const params = await searchParams;
-  const loginError = params.error?.trim() ? "Invalid or expired login link" : null;
 
   return (
     <main className="flex min-h-screen items-center justify-center p-6">
       <div className="w-full max-w-5xl">
         <div className="mb-8 text-center">
           <p className="text-xs uppercase tracking-[0.24em] text-cyan-300/80">
-            Email Operations
+            First Setup
           </p>
           <h1 className="mt-2 text-4xl font-semibold">
             <span className="title-gradient">SES Template Pilot</span>
           </h1>
         </div>
         <div className="flex justify-center">
-          <LoginForm loginError={loginError} setupRequired={false} />
+          <SetupForm />
         </div>
       </div>
     </main>
   );
 }
+

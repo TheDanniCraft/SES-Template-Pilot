@@ -8,6 +8,7 @@ import { authSessions, users } from "@/lib/schema";
 export type AuthenticatedUser = {
   id: string;
   email: string;
+  name: string | null;
 };
 
 export async function getServerSessionUser() {
@@ -26,7 +27,8 @@ export async function getServerSessionUser() {
   const [session] = await db
     .select({
       userId: users.id,
-      userEmail: users.email
+      userEmail: users.email,
+      userName: users.name
     })
     .from(authSessions)
     .innerJoin(users, eq(users.id, authSessions.userId))
@@ -45,7 +47,8 @@ export async function getServerSessionUser() {
 
   return {
     id: session.userId,
-    email: session.userEmail
+    email: session.userEmail,
+    name: session.userName
   } satisfies AuthenticatedUser;
 }
 
