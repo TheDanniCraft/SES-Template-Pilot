@@ -21,7 +21,7 @@ jobs:
       cache-key: ${{ steps.compute-key.outputs.key }}
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Set up Bun
         uses: oven-sh/setup-bun@v2
@@ -34,7 +34,7 @@ jobs:
 
       - name: Restore Bun and node_modules cache
         id: restore
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v5
         with:
           path: |
             ~/.bun/install/cache
@@ -48,7 +48,7 @@ jobs:
 
       - name: Save Bun and node_modules cache
         if: steps.restore.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v5
         with:
           path: |
             ~/.bun/install/cache
@@ -62,7 +62,7 @@ jobs:
     needs: deps
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Set up Bun
         uses: oven-sh/setup-bun@v2
@@ -70,7 +70,7 @@ jobs:
           bun-version: 1.3.3
 
       - name: Restore dependency cache
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v5
         with:
           path: |
             ~/.bun/install/cache
@@ -87,7 +87,7 @@ jobs:
     needs: deps
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Set up Bun
         uses: oven-sh/setup-bun@v2
@@ -95,7 +95,7 @@ jobs:
           bun-version: 1.3.3
 
       - name: Restore dependency cache
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v5
         with:
           path: |
             ~/.bun/install/cache
@@ -103,14 +103,15 @@ jobs:
             **/node_modules
           key: ${{ needs.deps.outputs.cache-key }}
 
-      - name: Cache Next.js build cache
-        uses: actions/cache@v4
+      - name: Cache Next.js build
+        uses: actions/cache@v5
         with:
           path: |
             ${{ github.workspace }}/.next/cache
           key: ${{ runner.os }}-nextjs-${{ hashFiles('**/bun.lock') }}-${{ hashFiles('**/*.js', '**/*.jsx', '**/*.ts', '**/*.tsx') }}
           restore-keys: |
             ${{ runner.os }}-nextjs-${{ hashFiles('**/bun.lock') }}-
+            ${{ runner.os }}-nextjs-
 
       - name: Run build
         run: bun run build
