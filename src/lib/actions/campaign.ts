@@ -2,9 +2,13 @@
 
 import { SendTemplatedEmailCommand } from "@aws-sdk/client-ses";
 import { db } from "@/lib/db";
+import { getRequiredUserOrg } from "@/lib/org";
 import { sentEmails } from "@/lib/schema";
 import { getSesSendingQuota } from "@/lib/ses-quota";
+import { sanitizeSesTagValue } from "@/lib/ses-tags";
+import { getUserConfigurationSetName } from "@/lib/ses-webhook";
 import { getServerSessionUser } from "@/lib/server-auth";
+import { decodeEscapedUnicode } from "@/lib/unicode";
 import { getUserSesClients } from "@/lib/user-ses";
 import { campaignSchema, type CampaignInput } from "@/lib/validators";
 
@@ -31,7 +35,7 @@ function parseRecipientTemplateDataMap(input: string) {
       mapped[recipient] = Object.fromEntries(
         Object.entries(value as Record<string, unknown>).map(([key, nestedValue]) => [
           key,
-          String(nestedValue ?? "")
+          decodeEscapedUnicode(String(nestedValue ?? ""))
         ])
       );
     }
@@ -60,6 +64,7 @@ export async function sendCampaignAction(input: CampaignInput) {
   }
 
   const { recipients, templateData, templateName } = parsed.data;
+  const org = await getRequiredUserOrg(user.id);
   const recipientTemplateDataMap = parseRecipientTemplateDataMap(templateData);
   if (!recipientTemplateDataMap) {
     return {
@@ -100,7 +105,7 @@ export async function sendCampaignAction(input: CampaignInput) {
     };
   }
 
-  const quotaResult = await getSesSendingQuota(user.id);
+  const quotaResult = await getSesSendingQuota(user.id, { useCache: false });
   if (!quotaResult.success) {
     return {
       success: false,
@@ -144,7 +149,13 @@ export async function sendCampaignAction(input: CampaignInput) {
           Source: sourceEmail,
           Destination: { ToAddresses: [recipient] },
           Template: templateName,
-          TemplateData: JSON.stringify(templateDataForRecipient)
+          TemplateData: JSON.stringify(templateDataForRecipient),
+          ConfigurationSetName: getUserConfigurationSetName(org.organizationId),
+          Tags: [
+            { Name: "stp_user_id", Value: user.id },
+            { Name: "stp_org_id", Value: org.organizationId },
+            { Name: "stp_template", Value: sanitizeSesTagValue(templateName) }
+          ]
         })
       );
 
@@ -155,6 +166,7 @@ export async function sendCampaignAction(input: CampaignInput) {
       });
 
       await db.insert(sentEmails).values({
+        organizationId: org.organizationId,
         userId: user.id,
         recipient,
         templateUsed: templateName,
@@ -172,6 +184,7 @@ export async function sendCampaignAction(input: CampaignInput) {
       });
 
       await db.insert(sentEmails).values({
+        organizationId: org.organizationId,
         userId: user.id,
         recipient,
         templateUsed: templateName,

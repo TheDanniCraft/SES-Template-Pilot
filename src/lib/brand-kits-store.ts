@@ -6,6 +6,7 @@ import {
   type BrandKitColorValues
 } from "@/lib/brand-kits";
 import { db } from "@/lib/db";
+import { getRequiredUserOrg } from "@/lib/org";
 import { attachBrandKitId, extractBrandKitId } from "@/lib/ses-template-json";
 import { nowSql, brandKits, templateDrafts } from "@/lib/schema";
 
@@ -28,19 +29,6 @@ const DEFAULT_DARK_COLORS: BrandKitColorValues = {
   link: "#5f06f5",
   buttonText: "#ffffff"
 };
-
-const DEFAULT_BRAND_KITS: Array<Omit<BrandKit, "id">> = [
-  {
-    name: "Clipify",
-    iconUrl: "https://storage.cloud.thedannicraft.de/assets/Clipify.png",
-    colors: {
-      ...DEFAULT_BASE_COLORS,
-      dark: {
-        ...DEFAULT_DARK_COLORS
-      }
-    }
-  }
-];
 
 function isUuid(value: string) {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
@@ -117,12 +105,12 @@ function sanitizeBrandKit(input: BrandKit): BrandKit {
   };
 }
 
-async function migrateLegacyBrandKitIds(userId: string) {
+async function migrateLegacyBrandKitIds(organizationId: string) {
   await db.transaction(async (tx) => {
     const kitRows = await tx
       .select()
       .from(brandKits)
-      .where(eq(brandKits.userId, userId));
+      .where(eq(brandKits.organizationId, organizationId));
 
     const legacyRows = kitRows.filter((row) => !isUuid(row.id));
     if (legacyRows.length === 0) {
@@ -139,7 +127,12 @@ async function migrateLegacyBrandKitIds(userId: string) {
           id: nextId,
           updatedAt: nowSql
         })
-        .where(and(eq(brandKits.userId, userId), eq(brandKits.id, row.id)));
+        .where(
+          and(
+            eq(brandKits.organizationId, organizationId),
+            eq(brandKits.id, row.id)
+          )
+        );
     }
 
     const draftRows = await tx
@@ -148,7 +141,7 @@ async function migrateLegacyBrandKitIds(userId: string) {
         designJson: templateDrafts.designJson
       })
       .from(templateDrafts)
-      .where(eq(templateDrafts.userId, userId));
+      .where(eq(templateDrafts.organizationId, organizationId));
 
     for (const draft of draftRows) {
       if (
@@ -175,48 +168,24 @@ async function migrateLegacyBrandKitIds(userId: string) {
           designJson: attachBrandKitId(draft.designJson, migratedKitId),
           updatedAt: nowSql
         })
-        .where(and(eq(templateDrafts.userId, userId), eq(templateDrafts.id, draft.id)));
+        .where(
+          and(
+            eq(templateDrafts.organizationId, organizationId),
+            eq(templateDrafts.id, draft.id)
+          )
+        );
     }
   });
 }
 
-async function ensureSeedBrandKits(userId: string) {
-  const [existing] = await db
-    .select({ value: count() })
-    .from(brandKits)
-    .where(eq(brandKits.userId, userId));
-
-  if ((existing?.value ?? 0) > 0) {
-    return;
-  }
-
-  await db
-    .insert(brandKits)
-    .values(
-      DEFAULT_BRAND_KITS.map((kit) => {
-        const normalized = sanitizeBrandKitFields(kit);
-        return {
-          userId,
-          id: randomUUID(),
-          name: normalized.name,
-          iconUrl: normalized.iconUrl,
-          colors: normalized.colors
-        };
-      })
-    )
-    .onConflictDoNothing({
-      target: [brandKits.userId, brandKits.id]
-    });
-}
-
 export async function listBrandKits(userId: string) {
-  await ensureSeedBrandKits(userId);
-  await migrateLegacyBrandKitIds(userId);
+  const org = await getRequiredUserOrg(userId);
+  await migrateLegacyBrandKitIds(org.organizationId);
 
   const rows = await db
     .select()
     .from(brandKits)
-    .where(eq(brandKits.userId, userId))
+    .where(eq(brandKits.organizationId, org.organizationId))
     .orderBy(brandKits.name);
 
   return rows.map((row) =>
@@ -230,19 +199,20 @@ export async function listBrandKits(userId: string) {
 }
 
 export async function upsertBrandKit(userId: string, kit: BrandKit) {
+  const org = await getRequiredUserOrg(userId);
   const normalized = sanitizeBrandKit(kit);
 
   await db
     .insert(brandKits)
     .values({
-      userId,
+      organizationId: org.organizationId,
       id: normalized.id,
       name: normalized.name,
       iconUrl: normalized.iconUrl,
       colors: normalized.colors
     })
     .onConflictDoUpdate({
-      target: [brandKits.userId, brandKits.id],
+      target: [brandKits.organizationId, brandKits.id],
       set: {
         name: normalized.name,
         iconUrl: normalized.iconUrl,
@@ -253,6 +223,7 @@ export async function upsertBrandKit(userId: string, kit: BrandKit) {
 }
 
 export async function deleteBrandKitById(userId: string, id: string) {
+  const org = await getRequiredUserOrg(userId);
   const target = id.trim().toLowerCase();
   if (!target) {
     return;
@@ -261,7 +232,7 @@ export async function deleteBrandKitById(userId: string, id: string) {
   const [existing] = await db
     .select({ value: count() })
     .from(brandKits)
-    .where(eq(brandKits.userId, userId));
+    .where(eq(brandKits.organizationId, org.organizationId));
 
   if ((existing?.value ?? 0) <= 1) {
     return;
@@ -269,5 +240,10 @@ export async function deleteBrandKitById(userId: string, id: string) {
 
   await db
     .delete(brandKits)
-    .where(and(eq(brandKits.userId, userId), eq(brandKits.id, target)));
+    .where(
+      and(
+        eq(brandKits.organizationId, org.organizationId),
+        eq(brandKits.id, target)
+      )
+    );
 }

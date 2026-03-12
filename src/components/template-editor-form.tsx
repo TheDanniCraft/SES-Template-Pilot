@@ -350,14 +350,18 @@ export function TemplateEditorForm({
     }
 
     form.setValue("htmlContent", cleanedHtml, { shouldDirty: false });
-    setLiveBuilderHtml(cleanedHtml);
+    queueMicrotask(() => {
+      setLiveBuilderHtml(cleanedHtml);
+    });
     const parsed = parseHtmlDocumentShell(cleanedHtml);
     if (parsed) {
       preservedDocumentShellRef.current = parsed;
-      setBuilderSeed((current) => ({
-        ...current,
-        html: parsed.body
-      }));
+      queueMicrotask(() => {
+        setBuilderSeed((current) => ({
+          ...current,
+          html: parsed.body
+        }));
+      });
     }
   }, [form, selectedBrandKit]);
 
@@ -580,7 +584,15 @@ export function TemplateEditorForm({
 
       router.refresh();
     });
-  }, [canSaveLocal, flushBuilderSnapshot, form, htmlEditMode, router, startTransition]);
+  }, [
+    canSaveLocal,
+    flushBuilderSnapshot,
+    form,
+    htmlEditMode,
+    router,
+    shouldPersistEditorJson,
+    startTransition
+  ]);
 
   useSaveShortcut(onSaveLocal, !isPending);
 
@@ -897,7 +909,9 @@ export function TemplateEditorForm({
             <Tab key="builder" isDisabled={isBuilderLocked} title="Builder">
               {isBuilderLocked ? (
                 <div className="rounded-xl border border-amber-300/40 bg-amber-500/10 p-4 text-sm text-amber-100">
-                  Builder is locked for this template. Open it from Raw HTML with "Load Editor Anyway".
+                  Builder is locked for this template. Open it from Raw HTML with
+                  {" "}
+                  &quot;Load Editor Anyway&quot;.
                 </div>
               ) : (
                 <MailyEditor
