@@ -146,7 +146,8 @@ For full functionality:
 - SES template + send permissions (SESv2 + SES)
 - `ses:GetSendQuota`
 - `cloudwatch:GetMetricData` (dashboard deliverability)
-- SNS permissions for webhook setup (`CreateTopic`, `Subscribe`, `SetTopicAttributes`, `ListSubscriptionsByTopic`)
+- Attach AWS managed policy `AmazonSNSFullAccess` for webhook setup automation
+- Alternative: custom SNS policy with `CreateTopic`, `Subscribe`, `SetTopicAttributes`, `ListSubscriptionsByTopic`
 
 ## Routes
 
