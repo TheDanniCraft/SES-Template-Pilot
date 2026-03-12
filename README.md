@@ -43,13 +43,13 @@ SES Template Pilot is a secure, local-first operations UI for Amazon SES.
 
 It combines:
 
-- magic-link authentication
+- password authentication
 - visual email editing
 - SES template sync
 - campaign sending
 - contact books
 - brand kits
-- per-user SES credentials
+- org-scoped SES credentials
 - dashboard metrics + send logs
 
 Everything is built around practical campaign workflows with an editable draft layer in PostgreSQL.
@@ -61,8 +61,8 @@ Everything is built around practical campaign workflows with an editable draft l
   - raw HTML editor
   - plain text mode (manual or auto from HTML)
 - **Auth + Tenancy**
-  - magic-link login only
-  - per-user sessions and isolated data
+  - password-based login
+  - organization-based access control
 - **SES Sync**
   - list/get/create/update/delete SES templates
   - reset local drafts from SES
@@ -110,7 +110,7 @@ bun run dev
 ```
 
 6. Open `http://localhost:3000`.
-7. Request a magic link on `/login`.
+7. Create your first account on `/setup`.
 
 ## Environment
 
@@ -120,20 +120,15 @@ COOKIE_SECRET=change-me-to-a-long-random-value
 DB_SECRET_KEY=base64-encoded-32-byte-key
 DATABASE_URL=postgres://postgres:postgres@localhost:5433/ses_ui
 APP_BASE_URL=http://localhost:3000
-AUTH_MAGIC_LINK_FROM=no-reply@example.com
-SMTP_HOST=
-SMTP_PORT=587
-SMTP_SECURE=false
-SMTP_USER=
-SMTP_PASS=
-SMTP_FROM_EMAIL=no-reply@example.com
+SES_WEBHOOK_URL=
+SES_WEBHOOK_SECRET=
 ```
 
 - `COOKIE_SECRET`: required for auth cookie signing
 - `DB_SECRET_KEY`: AES-256 key (base64 32 bytes) for encrypted SES credentials in DB
-- `SMTP_*`: SMTP transport for magic-link delivery
-- `AUTH_MAGIC_LINK_FROM`: sender used for magic-link emails (falls back to `SMTP_FROM_EMAIL`)
-- SES send/template/metrics credentials are configured per user in `/settings`
+- `SES_WEBHOOK_SECRET`: shared secret checked by `/api/webhooks/ses`
+- `SES_WEBHOOK_URL`: optional override; defaults to `${APP_BASE_URL}/api/webhooks/ses`
+- SES credentials are configured per organization in `/app/organization`
 
 ## Docker
 
@@ -148,9 +143,10 @@ docker compose up -d
 
 For full functionality:
 
-- SES template + send permissions
+- SES template + send permissions (SESv2 + SES)
 - `ses:GetSendQuota`
 - `cloudwatch:GetMetricData` (dashboard deliverability)
+- SNS permissions for webhook setup (`CreateTopic`, `Subscribe`, `SetTopicAttributes`, `ListSubscriptionsByTopic`)
 
 ## Routes
 
@@ -164,7 +160,8 @@ For full functionality:
 - `/app/logs` - send logs
 - `/app/brand-kits` - brand kit manager
 - `/app/contact-books` - contact book manager
-- `/app/settings` - per-user SES credentials
+- `/app/settings` - account settings
+- `/app/organization` - org members, invites, license, org SES credentials
 
 ## Scripts
 
@@ -183,11 +180,10 @@ For full functionality:
 
 - `DATABASE_URL is not set`: add it to `.env`.
 - `COOKIE_SECRET is not set`: add `COOKIE_SECRET` to `.env`.
-- Magic link email fails: set `SMTP_HOST/PORT/USER/PASS` and `AUTH_MAGIC_LINK_FROM`.
 - Postgres auth error `28P01`: verify DB user/password in `DATABASE_URL`.
 - Deliverability metrics unavailable: ensure `cloudwatch:GetMetricData` is allowed.
-- SES send failures: open `/settings` and verify per-user SES credentials + source email.
-- Campaign send failures: check per-user SES credentials and source email in `/app/settings`.
+- SES send failures: open `/app/organization` and verify org SES credentials + source email.
+- Webhook events missing: verify `SES_WEBHOOK_SECRET` and that SES can reach `/api/webhooks/ses`.
 
 <img src="./assets/readme/divider.svg" alt="divider" width="100%">
 
