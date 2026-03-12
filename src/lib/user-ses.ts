@@ -2,7 +2,8 @@ import { CloudWatchClient } from "@aws-sdk/client-cloudwatch";
 import { SESClient } from "@aws-sdk/client-ses";
 import { eq } from "drizzle-orm";
 import { db } from "@/lib/db";
-import { userSesConfigs } from "@/lib/schema";
+import { getRequiredUserOrg } from "@/lib/org";
+import { organizationSesConfigs } from "@/lib/schema";
 import { decryptToken } from "@/lib/token-crypto";
 
 export type UserSesConfig = {
@@ -11,6 +12,8 @@ export type UserSesConfig = {
   secretAccessKey: string | null;
   sessionToken: string | null;
   sourceEmail: string | null;
+  openTrackingEnabled: boolean;
+  clickTrackingEnabled: boolean;
 };
 
 function trimOrNull(value: string | null | undefined) {
@@ -37,15 +40,18 @@ export function normalizeUserSesConfig(
     accessKeyId: trimOrNull(config?.accessKeyId),
     secretAccessKey: trimOrNull(config?.secretAccessKey),
     sessionToken: trimOrNull(config?.sessionToken),
-    sourceEmail: trimOrNull(config?.sourceEmail)
+    sourceEmail: trimOrNull(config?.sourceEmail),
+    openTrackingEnabled: config?.openTrackingEnabled ?? true,
+    clickTrackingEnabled: config?.clickTrackingEnabled ?? true
   };
 }
 
 export async function getUserSesConfig(userId: string) {
+  const org = await getRequiredUserOrg(userId);
   const [row] = await db
     .select()
-    .from(userSesConfigs)
-    .where(eq(userSesConfigs.userId, userId))
+    .from(organizationSesConfigs)
+    .where(eq(organizationSesConfigs.organizationId, org.organizationId))
     .limit(1);
 
   if (!row) {
@@ -54,13 +60,15 @@ export async function getUserSesConfig(userId: string) {
 
   return normalizeUserSesConfig({
     awsRegion: row.awsRegion,
-    accessKeyId: decryptNullable(row.accessKeyId, sesAad(userId, "accessKeyId")),
+    accessKeyId: decryptNullable(row.accessKeyId, sesAad(org.organizationId, "accessKeyId")),
     secretAccessKey: decryptNullable(
       row.secretAccessKey,
-      sesAad(userId, "secretAccessKey")
+      sesAad(org.organizationId, "secretAccessKey")
     ),
-    sessionToken: decryptNullable(row.sessionToken, sesAad(userId, "sessionToken")),
-    sourceEmail: row.sourceEmail
+    sessionToken: decryptNullable(row.sessionToken, sesAad(org.organizationId, "sessionToken")),
+    sourceEmail: row.sourceEmail,
+    openTrackingEnabled: row.openTrackingEnabled,
+    clickTrackingEnabled: row.clickTrackingEnabled
   });
 }
 
@@ -83,7 +91,8 @@ export async function getUserSesClients(userId: string) {
   if (!hasRequiredCredentials(config)) {
     return {
       success: false as const,
-      error: "SES is not configured for this user. Open Settings and add AWS SES credentials."
+      error:
+        "SES is not configured for this organization. Open Manage Org and add AWS SES credentials."
     };
   }
 

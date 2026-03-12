@@ -1,4 +1,4 @@
-"use server";
+﻿"use server";
 
 import {
   CreateTemplateCommand,
@@ -10,6 +10,7 @@ import {
 import { and, desc, eq } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { nowSql, templateDrafts } from "@/lib/schema";
+import { getRequiredUserOrg } from "@/lib/org";
 import { getServerSessionUser } from "@/lib/server-auth";
 import {
   attachPreviewVariables,
@@ -255,14 +256,14 @@ function slugifyTemplateName(input: string) {
   return normalized || "template";
 }
 
-async function generateUniqueDraftName(userId: string, baseName: string) {
+async function generateUniqueDraftName(organizationId: string, baseName: string) {
   const normalizedBase = baseName.trim() || "Template";
   let next = `${normalizedBase} (Copy)`;
   let suffix = 2;
 
   while (true) {
     const exists = await db.query.templateDrafts.findFirst({
-      where: and(eq(templateDrafts.userId, userId), eq(templateDrafts.name, next))
+      where: and(eq(templateDrafts.organizationId, organizationId), eq(templateDrafts.name, next))
     });
 
     if (!exists) {
@@ -274,7 +275,7 @@ async function generateUniqueDraftName(userId: string, baseName: string) {
   }
 }
 
-async function generateUniqueSesTemplateName(userId: string, baseName: string) {
+async function generateUniqueSesTemplateName(organizationId: string, baseName: string) {
   const normalizedBase = slugifyTemplateName(baseName);
   let next = `${normalizedBase}-copy`;
   let suffix = 2;
@@ -282,7 +283,7 @@ async function generateUniqueSesTemplateName(userId: string, baseName: string) {
   while (true) {
     const exists = await db.query.templateDrafts.findFirst({
       where: and(
-        eq(templateDrafts.userId, userId),
+        eq(templateDrafts.organizationId, organizationId),
         eq(templateDrafts.sesTemplateName, next)
       )
     });
@@ -410,11 +411,12 @@ export async function listLocalDrafts() {
   if (!user) {
     return [];
   }
+  const org = await getRequiredUserOrg(user.id);
 
   const drafts = await db
     .select()
     .from(templateDrafts)
-    .where(eq(templateDrafts.userId, user.id))
+    .where(eq(templateDrafts.organizationId, org.organizationId))
     .orderBy(desc(templateDrafts.updatedAt));
   return drafts.map(decodeDraftSubject);
 }
@@ -424,13 +426,14 @@ export async function getLocalDraftById(id: string) {
   if (!user) {
     return null;
   }
+  const org = await getRequiredUserOrg(user.id);
 
   if (!isUuid(id)) {
     return null;
   }
 
   const draft = await db.query.templateDrafts.findFirst({
-    where: and(eq(templateDrafts.id, id), eq(templateDrafts.userId, user.id))
+    where: and(eq(templateDrafts.id, id), eq(templateDrafts.organizationId, org.organizationId))
   });
   return draft ? decodeDraftSubject(draft) : null;
 }
@@ -440,11 +443,12 @@ export async function getLocalDraftBySesName(name: string) {
   if (!user) {
     return null;
   }
+  const org = await getRequiredUserOrg(user.id);
 
   const draft = await db.query.templateDrafts.findFirst({
     where: and(
       eq(templateDrafts.sesTemplateName, name),
-      eq(templateDrafts.userId, user.id)
+      eq(templateDrafts.organizationId, org.organizationId)
     )
   });
   return draft ? decodeDraftSubject(draft) : null;
@@ -460,6 +464,7 @@ export async function duplicateTemplateAction(input: DuplicateTemplateInput) {
   if (!user) {
     return { success: false, error: "Unauthorized" };
   }
+  const org = await getRequiredUserOrg(user.id);
 
   const id = input.id.trim();
   if (!id) {
@@ -519,7 +524,7 @@ export async function duplicateTemplateAction(input: DuplicateTemplateInput) {
     }
 
     const localDraft = await db.query.templateDrafts.findFirst({
-      where: and(eq(templateDrafts.id, id), eq(templateDrafts.userId, user.id))
+      where: and(eq(templateDrafts.id, id), eq(templateDrafts.organizationId, org.organizationId))
     });
 
     if (!localDraft) {
@@ -541,7 +546,7 @@ export async function duplicateTemplateAction(input: DuplicateTemplateInput) {
     return { success: false, error: "Template source not found" };
   }
 
-  const nextName = await generateUniqueDraftName(user.id, sourceDraft.name);
+  const nextName = await generateUniqueDraftName(org.organizationId, sourceDraft.name);
   const nextSesTemplateName = await generateUniqueSesTemplateName(
     user.id,
     sourceDraft.sesTemplateName ?? sourceDraft.name
@@ -563,7 +568,7 @@ export async function duplicateTemplateAction(input: DuplicateTemplateInput) {
   const [created] = await db
     .insert(templateDrafts)
     .values({
-      userId: user.id,
+      organizationId: org.organizationId,
       name: nextName,
       sesTemplateName: nextSesTemplateName,
       subject: sourceDraft.subject,
@@ -585,6 +590,7 @@ export async function saveTemplateDraftAction(input: TemplateDraftInput) {
       error: "Unauthorized"
     };
   }
+  const org = await getRequiredUserOrg(user.id);
 
   const parsed = templateDraftSchema.safeParse(input);
   if (!parsed.success) {
@@ -626,7 +632,7 @@ export async function saveTemplateDraftAction(input: TemplateDraftInput) {
         designJson: normalizedDesignJson,
         updatedAt: nowSql
       })
-      .where(and(eq(templateDrafts.id, payload.id), eq(templateDrafts.userId, user.id)))
+      .where(and(eq(templateDrafts.id, payload.id), eq(templateDrafts.organizationId, org.organizationId)))
       .returning({ id: templateDrafts.id });
 
     if (!updated) {
@@ -638,7 +644,7 @@ export async function saveTemplateDraftAction(input: TemplateDraftInput) {
   const [draft] = await db
     .insert(templateDrafts)
     .values({
-      userId: user.id,
+      organizationId: org.organizationId,
       name: payload.name,
       sesTemplateName: payload.sesTemplateName,
       subject: normalizedSubject,
@@ -660,6 +666,7 @@ export async function syncTemplateToSesAction(input: SyncTemplateInput) {
       error: "Unauthorized"
     };
   }
+  const org = await getRequiredUserOrg(user.id);
 
   const ses = await getUserSesClients(user.id);
   if (!ses.success) {
@@ -682,7 +689,7 @@ export async function syncTemplateToSesAction(input: SyncTemplateInput) {
   const existingDraft = await db.query.templateDrafts.findFirst({
     where: and(
       eq(templateDrafts.sesTemplateName, payload.sesTemplateName),
-      eq(templateDrafts.userId, user.id)
+      eq(templateDrafts.organizationId, org.organizationId)
     )
   });
 
@@ -737,7 +744,7 @@ export async function syncTemplateToSesAction(input: SyncTemplateInput) {
     })
     .where(
       and(
-        eq(templateDrafts.userId, user.id),
+        eq(templateDrafts.organizationId, org.organizationId),
         eq(templateDrafts.sesTemplateName, payload.sesTemplateName)
       )
     );
@@ -755,6 +762,7 @@ export async function deleteTemplateAction(input: DeleteTemplateInput) {
   if (!user) {
     return { success: false, error: "Unauthorized" };
   }
+  const org = await getRequiredUserOrg(user.id);
 
   const draftId = input.draftId?.trim();
   const providedSesTemplateName = input.sesTemplateName?.trim();
@@ -770,7 +778,7 @@ export async function deleteTemplateAction(input: DeleteTemplateInput) {
     }
 
     const draft = await db.query.templateDrafts.findFirst({
-      where: and(eq(templateDrafts.id, draftId), eq(templateDrafts.userId, user.id))
+      where: and(eq(templateDrafts.id, draftId), eq(templateDrafts.organizationId, org.organizationId))
     });
     if (draft?.sesTemplateName) {
       sesTemplateName = draft.sesTemplateName;
@@ -778,7 +786,7 @@ export async function deleteTemplateAction(input: DeleteTemplateInput) {
 
     await db
       .delete(templateDrafts)
-      .where(and(eq(templateDrafts.id, draftId), eq(templateDrafts.userId, user.id)));
+      .where(and(eq(templateDrafts.id, draftId), eq(templateDrafts.organizationId, org.organizationId)));
   }
 
   if (sesTemplateName) {
@@ -786,7 +794,7 @@ export async function deleteTemplateAction(input: DeleteTemplateInput) {
       .delete(templateDrafts)
       .where(
         and(
-          eq(templateDrafts.userId, user.id),
+          eq(templateDrafts.organizationId, org.organizationId),
           eq(templateDrafts.sesTemplateName, sesTemplateName)
         )
       );
@@ -831,6 +839,7 @@ export async function resetTemplateDraftFromSesAction(
   if (!user) {
     return { success: false, error: "Unauthorized" };
   }
+  const org = await getRequiredUserOrg(user.id);
 
   const ses = await getUserSesClients(user.id);
   if (!ses.success) {
@@ -858,7 +867,7 @@ export async function resetTemplateDraftFromSesAction(
 
     let existingDraft = draftId
       ? await db.query.templateDrafts.findFirst({
-          where: and(eq(templateDrafts.id, draftId), eq(templateDrafts.userId, user.id))
+          where: and(eq(templateDrafts.id, draftId), eq(templateDrafts.organizationId, org.organizationId))
         })
       : null;
 
@@ -866,7 +875,7 @@ export async function resetTemplateDraftFromSesAction(
       existingDraft = await db.query.templateDrafts.findFirst({
         where: and(
           eq(templateDrafts.sesTemplateName, sesTemplateName),
-          eq(templateDrafts.userId, user.id)
+          eq(templateDrafts.organizationId, org.organizationId)
         )
       });
     }
@@ -899,7 +908,7 @@ export async function resetTemplateDraftFromSesAction(
           ...payload,
           updatedAt: nowSql
         })
-        .where(and(eq(templateDrafts.id, existingDraft.id), eq(templateDrafts.userId, user.id)));
+        .where(and(eq(templateDrafts.id, existingDraft.id), eq(templateDrafts.organizationId, org.organizationId)));
 
       return {
         success: true,
@@ -923,7 +932,7 @@ export async function resetTemplateDraftFromSesAction(
     const [created] = await db
       .insert(templateDrafts)
       .values({
-        userId: user.id,
+        organizationId: org.organizationId,
         ...payload
       })
       .returning({ id: templateDrafts.id });
@@ -952,3 +961,5 @@ export async function resetTemplateDraftFromSesAction(
     };
   }
 }
+
+

@@ -1,4 +1,5 @@
 import { GetSendQuotaCommand } from "@aws-sdk/client-ses";
+import { unstable_cache } from "next/cache";
 import { getUserSesClients } from "@/lib/user-ses";
 
 export type SesSendingQuota = {
@@ -8,7 +9,9 @@ export type SesSendingQuota = {
   remaining24HourSend: number;
 };
 
-export async function getSesSendingQuota(userId: string) {
+const ONE_DAY_SECONDS = 60 * 60 * 24;
+
+async function fetchSesSendingQuota(userId: string) {
   const ses = await getUserSesClients(userId);
   if (!ses.success) {
     return {
@@ -45,5 +48,23 @@ export async function getSesSendingQuota(userId: string) {
       data: null
     };
   }
+}
+
+const getCachedSesSendingQuota = unstable_cache(
+  async (userId: string) => fetchSesSendingQuota(userId),
+  ["ses-sending-quota"],
+  {
+    revalidate: ONE_DAY_SECONDS
+  }
+);
+
+export async function getSesSendingQuota(
+  userId: string,
+  options?: { useCache?: boolean }
+) {
+  if (options?.useCache) {
+    return getCachedSesSendingQuota(userId);
+  }
+  return fetchSesSendingQuota(userId);
 }
 

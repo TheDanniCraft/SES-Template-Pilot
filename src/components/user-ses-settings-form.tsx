@@ -1,7 +1,16 @@
 "use client";
 
-import { useCallback, useState, useTransition } from "react";
-import { Button, Card, CardBody, CardHeader, Input } from "@heroui/react";
+import { useCallback, useMemo, useState, useTransition } from "react";
+import {
+  Button,
+  Card,
+  CardBody,
+  CardHeader,
+  Input,
+  Select,
+  SelectItem,
+  Switch
+} from "@heroui/react";
 import { Save } from "lucide-react";
 import { toast } from "sonner";
 import {
@@ -14,25 +23,37 @@ import type { UserSesConfig } from "@/lib/user-ses";
 type UserSesSettingsFormProps = {
   initialConfig: UserSesConfig;
   loadError?: string | null;
+  regions: string[];
 };
 
 export function UserSesSettingsForm({
   initialConfig,
-  loadError = null
+  loadError = null,
+  regions
 }: UserSesSettingsFormProps) {
+  const hasRegionOptions = regions.length > 0;
+  const defaultRegion = useMemo(() => {
+    if (regions.includes("us-east-1")) {
+      return "us-east-1";
+    }
+    return regions[0] ?? "";
+  }, [regions]);
   const [isSavePending, startSaveTransition] = useTransition();
   const [isTestPending, startTestTransition] = useTransition();
-  const [scopeWarning, setScopeWarning] = useState<string | null>(null);
   const [form, setForm] = useState({
-    awsRegion: initialConfig.awsRegion ?? "",
+    awsRegion: initialConfig.awsRegion || defaultRegion,
     accessKeyId: initialConfig.accessKeyId ?? "",
     secretAccessKey: initialConfig.secretAccessKey ?? "",
     sessionToken: initialConfig.sessionToken ?? "",
-    sourceEmail: initialConfig.sourceEmail ?? ""
+    sourceEmail: initialConfig.sourceEmail ?? "",
+    openTrackingEnabled: initialConfig.openTrackingEnabled,
+    clickTrackingEnabled: initialConfig.clickTrackingEnabled
   });
 
-  const updateField = (field: keyof typeof form, value: string) => {
-    setScopeWarning(null);
+  const updateField = (
+    field: "awsRegion" | "accessKeyId" | "secretAccessKey" | "sessionToken" | "sourceEmail",
+    value: string
+  ) => {
     setForm((current) => ({
       ...current,
       [field]: value
@@ -43,15 +64,10 @@ export function UserSesSettingsForm({
     startSaveTransition(async () => {
       const result = await saveUserSesConfigAction(form);
       if (!result.success) {
-        setScopeWarning(null);
         toast.error(result.error);
         return;
       }
       toast.success("SES settings saved and validated");
-      setScopeWarning(result.warning ?? null);
-      if (result.warning) {
-        toast.warning(result.warning);
-      }
     });
   }, [form, startSaveTransition]);
 
@@ -73,13 +89,14 @@ export function UserSesSettingsForm({
   useSaveShortcut(onSave, !isSavePending && !isTestPending);
 
   const onClear = () => {
-    setScopeWarning(null);
     setForm({
-      awsRegion: "",
+      awsRegion: hasRegionOptions ? defaultRegion : "",
       accessKeyId: "",
       secretAccessKey: "",
       sessionToken: "",
-      sourceEmail: ""
+      sourceEmail: "",
+      openTrackingEnabled: true,
+      clickTrackingEnabled: true
     });
   };
 
@@ -88,9 +105,9 @@ export function UserSesSettingsForm({
       <CardHeader>
         <div>
           <p className="text-xs uppercase tracking-[0.18em] text-cyan-300/90">Settings</p>
-          <h1 className="text-xl font-semibold">Your SES Credentials</h1>
+          <h1 className="text-xl font-semibold">Organization SES Credentials</h1>
           <p className="mt-1 text-xs text-slate-300">
-            These credentials are stored per user and used for templates, sending, and metrics.
+            These credentials are stored per organization and used for templates, sending, and quota checks.
           </p>
         </div>
       </CardHeader>
@@ -100,19 +117,33 @@ export function UserSesSettingsForm({
             {loadError}
           </div>
         ) : null}
-        {scopeWarning ? (
-          <div className="rounded-large border border-warning/40 bg-warning/10 p-3 text-xs text-warning-200">
-            {scopeWarning}
-          </div>
-        ) : null}
 
         <div className="grid gap-3 md:grid-cols-2">
-          <Input
-            label="AWS Region"
-            placeholder="us-east-1"
-            value={form.awsRegion}
-            onValueChange={(value) => updateField("awsRegion", value)}
-          />
+          {hasRegionOptions ? (
+            <Select
+              disallowEmptySelection
+              label="AWS Region"
+              selectedKeys={new Set([form.awsRegion || defaultRegion])}
+              onSelectionChange={(keys) => {
+                const selected = Array.from(keys)[0];
+                if (typeof selected === "string") {
+                  updateField("awsRegion", selected);
+                }
+              }}
+            >
+              {regions.map((region) => (
+                <SelectItem key={region}>{region}</SelectItem>
+              ))}
+            </Select>
+          ) : (
+            <Input
+              description="Region list unavailable from AWS endpoint. Enter region manually."
+              label="AWS Region"
+              placeholder="us-east-1"
+              value={form.awsRegion}
+              onValueChange={(value) => updateField("awsRegion", value)}
+            />
+          )}
           <Input
             label="Source Email"
             placeholder="no-reply@example.com"
@@ -142,6 +173,25 @@ export function UserSesSettingsForm({
           value={form.sessionToken}
           onValueChange={(value) => updateField("sessionToken", value)}
         />
+
+        <div className="grid gap-3 md:grid-cols-2">
+          <Switch
+            isSelected={form.openTrackingEnabled}
+            onValueChange={(value) =>
+              setForm((current) => ({ ...current, openTrackingEnabled: value }))
+            }
+          >
+            Open Tracking
+          </Switch>
+          <Switch
+            isSelected={form.clickTrackingEnabled}
+            onValueChange={(value) =>
+              setForm((current) => ({ ...current, clickTrackingEnabled: value }))
+            }
+          >
+            Click Tracking
+          </Switch>
+        </div>
 
         <div className="flex flex-wrap gap-2">
           <Button

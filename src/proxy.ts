@@ -2,7 +2,7 @@ import { NextResponse, type NextRequest } from "next/server";
 import { parseSessionCookie } from "@/lib/auth-cookie";
 
 const PUBLIC_EXACT_PATHS = ["/", "/favicon.ico", "/robots.txt", "/sitemap.xml"];
-const PUBLIC_PREFIX_PATHS = ["/login", "/_next"];
+const PUBLIC_PREFIX_PATHS = ["/login", "/setup", "/invite", "/_next", "/api/webhooks/ses"];
 
 function isPublicPath(pathname: string) {
   if (PUBLIC_EXACT_PATHS.includes(pathname)) {

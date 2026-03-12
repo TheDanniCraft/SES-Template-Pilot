@@ -3,6 +3,7 @@ import { and, eq } from "drizzle-orm";
 import type { ContactBook } from "@/lib/contact-books";
 import { extractRecipientsFromUnknown, normalizeRecipients } from "@/lib/contact-books";
 import { db } from "@/lib/db";
+import { getRequiredUserOrg } from "@/lib/org";
 import { contactBooks, nowSql } from "@/lib/schema";
 
 function sanitizeContactBook(input: ContactBook): ContactBook {
@@ -19,11 +20,11 @@ function isUuid(value: string) {
   );
 }
 
-async function migrateLegacyContactBookIds(userId: string) {
+async function migrateLegacyContactBookIds(organizationId: string) {
   const rows = await db
     .select()
     .from(contactBooks)
-    .where(eq(contactBooks.userId, userId));
+    .where(eq(contactBooks.organizationId, organizationId));
 
   const legacyRows = rows.filter((row) => !isUuid(row.id));
   for (const row of legacyRows) {
@@ -33,17 +34,23 @@ async function migrateLegacyContactBookIds(userId: string) {
         id: randomUUID(),
         updatedAt: nowSql
       })
-      .where(and(eq(contactBooks.userId, userId), eq(contactBooks.id, row.id)));
+      .where(
+        and(
+          eq(contactBooks.organizationId, organizationId),
+          eq(contactBooks.id, row.id)
+        )
+      );
   }
 }
 
 export async function listContactBooks(userId: string) {
-  await migrateLegacyContactBookIds(userId);
+  const org = await getRequiredUserOrg(userId);
+  await migrateLegacyContactBookIds(org.organizationId);
 
   const rows = await db
     .select()
     .from(contactBooks)
-    .where(eq(contactBooks.userId, userId))
+    .where(eq(contactBooks.organizationId, org.organizationId))
     .orderBy(contactBooks.name);
 
   return rows.map((row) =>
@@ -56,18 +63,19 @@ export async function listContactBooks(userId: string) {
 }
 
 export async function upsertContactBook(userId: string, book: ContactBook) {
+  const org = await getRequiredUserOrg(userId);
   const normalized = sanitizeContactBook(book);
 
   await db
     .insert(contactBooks)
     .values({
-      userId,
+      organizationId: org.organizationId,
       id: normalized.id,
       name: normalized.name,
       recipients: normalized.recipients
     })
     .onConflictDoUpdate({
-      target: [contactBooks.userId, contactBooks.id],
+      target: [contactBooks.organizationId, contactBooks.id],
       set: {
         name: normalized.name,
         recipients: normalized.recipients,
@@ -77,6 +85,7 @@ export async function upsertContactBook(userId: string, book: ContactBook) {
 }
 
 export async function deleteContactBookById(userId: string, id: string) {
+  const org = await getRequiredUserOrg(userId);
   const target = id.trim().toLowerCase();
   if (!target) {
     return;
@@ -84,5 +93,10 @@ export async function deleteContactBookById(userId: string, id: string) {
 
   await db
     .delete(contactBooks)
-    .where(and(eq(contactBooks.userId, userId), eq(contactBooks.id, target)));
+    .where(
+      and(
+        eq(contactBooks.organizationId, org.organizationId),
+        eq(contactBooks.id, target)
+      )
+    );
 }

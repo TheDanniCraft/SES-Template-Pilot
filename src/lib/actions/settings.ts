@@ -1,6 +1,8 @@
 "use server";
 
 import {
+  CreateConfigurationSetCommand,
+  CreateConfigurationSetEventDestinationCommand,
   DeleteTemplateCommand,
   GetAccountSendingEnabledCommand,
   GetSendQuotaCommand,
@@ -9,14 +11,29 @@ import {
   ListTemplatesCommand,
   SESClient,
   SendEmailCommand,
+  UpdateConfigurationSetEventDestinationCommand,
   UpdateTemplateCommand
 } from "@aws-sdk/client-ses";
-import { CloudWatchClient, GetMetricDataCommand } from "@aws-sdk/client-cloudwatch";
+import type { EventType } from "@aws-sdk/client-ses";
+import {
+  CreateTopicCommand,
+  SetTopicAttributesCommand,
+  SNSClient,
+  SubscribeCommand
+} from "@aws-sdk/client-sns";
 import { eq } from "drizzle-orm";
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
 import { db } from "@/lib/db";
-import { nowSql, userSesConfigs } from "@/lib/schema";
+import { getRequiredUserOrg } from "@/lib/org";
+import { nowSql, organizationSesConfigs, sentEmails } from "@/lib/schema";
+import { sanitizeSesTagValue } from "@/lib/ses-tags";
+import {
+  getSesWebhookEndpoint,
+  getUserConfigurationSetName,
+  getUserWebhookTopicName,
+  SES_EVENT_DESTINATION_NAME
+} from "@/lib/ses-webhook";
 import { getServerSessionUser } from "@/lib/server-auth";
 import { encryptToken } from "@/lib/token-crypto";
 import { normalizeUserSesConfig } from "@/lib/user-ses";
@@ -26,17 +43,28 @@ const sesSettingsSchema = z.object({
   accessKeyId: z.string().trim().optional(),
   secretAccessKey: z.string().trim().optional(),
   sessionToken: z.string().trim().optional(),
-  sourceEmail: z.string().trim().optional()
+  sourceEmail: z.string().trim().optional(),
+  openTrackingEnabled: z.boolean().optional(),
+  clickTrackingEnabled: z.boolean().optional()
 });
 
 const emailSchema = z.string().trim().email("Source email must be a valid email address");
 
-function hasAnyValue(input: Record<string, string | undefined>) {
-  return Object.values(input).some((value) => Boolean(value?.trim()));
+function hasAnyValue(input: z.infer<typeof sesSettingsSchema>) {
+  return [
+    input.awsRegion,
+    input.accessKeyId,
+    input.secretAccessKey,
+    input.sessionToken,
+    input.sourceEmail
+  ].some((value) => Boolean(value?.trim()));
 }
 
-function sesAad(userId: string, field: "accessKeyId" | "secretAccessKey" | "sessionToken") {
-  return `ses-config:${userId}:${field}`;
+function sesAad(
+  organizationId: string,
+  field: "accessKeyId" | "secretAccessKey" | "sessionToken"
+) {
+  return `ses-config:${organizationId}:${field}`;
 }
 
 function getSesClientFromConfig(config: ReturnType<typeof normalizeUserSesConfig>) {
@@ -50,10 +78,8 @@ function getSesClientFromConfig(config: ReturnType<typeof normalizeUserSesConfig
   });
 }
 
-function getCloudWatchClientFromConfig(
-  config: ReturnType<typeof normalizeUserSesConfig>
-) {
-  return new CloudWatchClient({
+function getSnsClientFromConfig(config: ReturnType<typeof normalizeUserSesConfig>) {
+  return new SNSClient({
     region: config.awsRegion!,
     credentials: {
       accessKeyId: config.accessKeyId!,
@@ -162,51 +188,173 @@ async function validateSesAppPermissions(sesClient: SESClient) {
   return { success: true as const };
 }
 
-async function validateCloudWatchPermission(
-  config: ReturnType<typeof normalizeUserSesConfig>
+async function ensureSesWebhookPipeline(
+  userId: string,
+  config: ReturnType<typeof normalizeUserSesConfig>,
+  sesClient: SESClient,
+  tracking: { openTrackingEnabled: boolean; clickTrackingEnabled: boolean }
 ) {
-  const cloudWatchClient = getCloudWatchClientFromConfig(config);
-  const end = new Date();
-  const start = new Date(end.getTime() - 15 * 60 * 1000);
-
-  try {
-    await cloudWatchClient.send(
-      new GetMetricDataCommand({
-        StartTime: start,
-        EndTime: end,
-        MetricDataQueries: [
-          {
-            Id: "probe_send",
-            ReturnData: true,
-            MetricStat: {
-              Metric: {
-                Namespace: "AWS/SES",
-                MetricName: "Send"
-              },
-              Period: 300,
-              Stat: "Sum"
-            }
-          }
-        ]
-      })
-    );
-  } catch (error) {
-    const rawMessage =
-      error instanceof Error ? error.message : "Failed to validate CloudWatch access";
-    const lowered = rawMessage.toLowerCase();
-    if (lowered.includes("cloudwatch:getmetricdata") && lowered.includes("not authorized")) {
-      return {
-        warning:
-          "CloudWatch read permission is missing (cloudwatch:GetMetricData). Deliverability metrics will be unavailable."
-      };
-    }
+  const endpoint = getSesWebhookEndpoint();
+  if (!endpoint) {
     return {
-      warning:
-        "CloudWatch metrics check failed. Deliverability metrics may be unavailable."
+      success: false as const,
+      error:
+        "Set SES_WEBHOOK_URL (or APP_BASE_URL) and SES_WEBHOOK_SECRET to auto-configure SES webhooks."
     };
   }
 
-  return { warning: null };
+  const snsClient = getSnsClientFromConfig(config);
+  const configurationSetName = getUserConfigurationSetName(userId);
+  const topicName = getUserWebhookTopicName(userId);
+
+  try {
+    await sesClient.send(
+      new CreateConfigurationSetCommand({
+        ConfigurationSet: { Name: configurationSetName }
+      })
+    );
+  } catch (error) {
+    const message = error instanceof Error ? error.message.toLowerCase() : "";
+    if (!message.includes("already")) {
+      return {
+        success: false as const,
+        error: getFriendlyAwsError("Failed to create SES configuration set", error)
+      };
+    }
+  }
+
+  let topicArn = "";
+  try {
+    const topic = await snsClient.send(new CreateTopicCommand({ Name: topicName }));
+    topicArn = topic.TopicArn ?? "";
+  } catch (error) {
+    return {
+      success: false as const,
+      error: getFriendlyAwsError("Failed to create SNS topic for SES webhooks", error)
+    };
+  }
+
+  if (!topicArn) {
+    return {
+      success: false as const,
+      error: "SNS topic ARN is missing after topic creation."
+    };
+  }
+
+  const policy = JSON.stringify({
+    Version: "2012-10-17",
+    Statement: [
+      {
+        Sid: "AllowSESPublish",
+        Effect: "Allow",
+        Principal: { Service: "ses.amazonaws.com" },
+        Action: "SNS:Publish",
+        Resource: topicArn
+      }
+    ]
+  });
+
+  try {
+    await snsClient.send(
+      new SetTopicAttributesCommand({
+        TopicArn: topicArn,
+        AttributeName: "Policy",
+        AttributeValue: policy
+      })
+    );
+  } catch (error) {
+    return {
+      success: false as const,
+      error: getFriendlyAwsError("Failed to set SNS topic policy for SES", error)
+    };
+  }
+
+  try {
+    await snsClient.send(
+      new SubscribeCommand({
+        TopicArn: topicArn,
+        Protocol: "https",
+        Endpoint: endpoint,
+        ReturnSubscriptionArn: true
+      })
+    );
+  } catch (error) {
+    const message = error instanceof Error ? error.message.toLowerCase() : "";
+    if (!message.includes("exists")) {
+      return {
+        success: false as const,
+        error: getFriendlyAwsError("Failed to subscribe webhook endpoint to SNS", error)
+      };
+    }
+  }
+
+  const matchingEventTypes: EventType[] = [
+    "send",
+    "delivery",
+    "bounce",
+    "complaint",
+    "reject",
+    "renderingFailure"
+  ];
+  if (tracking.openTrackingEnabled) {
+    matchingEventTypes.push("open");
+  }
+  if (tracking.clickTrackingEnabled) {
+    matchingEventTypes.push("click");
+  }
+
+  const eventDestination = {
+    Name: SES_EVENT_DESTINATION_NAME,
+    Enabled: true,
+    MatchingEventTypes: matchingEventTypes,
+    SNSDestination: {
+      TopicARN: topicArn
+    }
+  };
+
+  try {
+    await sesClient.send(
+      new CreateConfigurationSetEventDestinationCommand({
+        ConfigurationSetName: configurationSetName,
+        EventDestination: eventDestination
+      })
+    );
+  } catch (error) {
+    const message = error instanceof Error ? error.message.toLowerCase() : "";
+    if (!message.includes("already")) {
+      return {
+        success: false as const,
+        error: getFriendlyAwsError(
+          "Failed to create SES configuration set event destination",
+          error
+        )
+      };
+    }
+
+    try {
+      await sesClient.send(
+        new UpdateConfigurationSetEventDestinationCommand({
+          ConfigurationSetName: configurationSetName,
+          EventDestination: eventDestination
+        })
+      );
+    } catch (updateError) {
+      return {
+        success: false as const,
+        error: getFriendlyAwsError(
+          "Failed to update SES configuration set event destination",
+          updateError
+        )
+      };
+    }
+  }
+
+  return {
+    success: true as const,
+    data: {
+      configurationSetName
+    }
+  };
 }
 
 async function validateSesConfiguration(
@@ -264,8 +412,7 @@ async function validateSesConfiguration(
   return {
     success: true as const,
     data: {
-      sesClient,
-      cloudWatchWarning: (await validateCloudWatchPermission(config)).warning
+      sesClient
     }
   };
 }
@@ -277,6 +424,7 @@ export async function saveUserSesConfigAction(
   if (!user) {
     return { success: false, error: "Unauthorized" };
   }
+  const org = await getRequiredUserOrg(user.id);
 
   const parsed = sesSettingsSchema.safeParse(input);
   if (!parsed.success) {
@@ -288,8 +436,6 @@ export async function saveUserSesConfigAction(
 
   const normalized = normalizeUserSesConfig(parsed.data);
   const hasValues = hasAnyValue(parsed.data);
-  let cloudWatchWarning: string | null = null;
-
   if (
     hasValues &&
     (!normalized.awsRegion ||
@@ -320,50 +466,76 @@ export async function saveUserSesConfigAction(
         error: validation.error
       };
     }
-    cloudWatchWarning = validation.data.cloudWatchWarning;
+    const webhookSetup = await ensureSesWebhookPipeline(
+      org.organizationId,
+      normalized,
+      validation.data.sesClient,
+      {
+        openTrackingEnabled: normalized.openTrackingEnabled,
+        clickTrackingEnabled: normalized.clickTrackingEnabled
+      }
+    );
+    if (!webhookSetup.success) {
+      return {
+        success: false,
+        error: webhookSetup.error
+      };
+    }
   }
 
   if (!hasValues) {
-    await db.delete(userSesConfigs).where(eq(userSesConfigs.userId, user.id));
+    await db
+      .delete(organizationSesConfigs)
+      .where(eq(organizationSesConfigs.organizationId, org.organizationId));
   } else {
     try {
       await db
-        .insert(userSesConfigs)
+        .insert(organizationSesConfigs)
         .values({
-          userId: user.id,
+          organizationId: org.organizationId,
           awsRegion: normalized.awsRegion,
           accessKeyId: normalized.accessKeyId
-            ? encryptToken(normalized.accessKeyId, sesAad(user.id, "accessKeyId"))
+            ? encryptToken(normalized.accessKeyId, sesAad(org.organizationId, "accessKeyId"))
             : null,
           secretAccessKey: normalized.secretAccessKey
             ? encryptToken(
                 normalized.secretAccessKey,
-                sesAad(user.id, "secretAccessKey")
+                sesAad(org.organizationId, "secretAccessKey")
               )
             : null,
           sessionToken: normalized.sessionToken
-            ? encryptToken(normalized.sessionToken, sesAad(user.id, "sessionToken"))
+            ? encryptToken(normalized.sessionToken, sesAad(org.organizationId, "sessionToken"))
             : null,
           sourceEmail: normalized.sourceEmail,
+          openTrackingEnabled: normalized.openTrackingEnabled,
+          clickTrackingEnabled: normalized.clickTrackingEnabled,
           updatedAt: nowSql
         })
         .onConflictDoUpdate({
-          target: userSesConfigs.userId,
+          target: organizationSesConfigs.organizationId,
           set: {
             awsRegion: normalized.awsRegion,
             accessKeyId: normalized.accessKeyId
-              ? encryptToken(normalized.accessKeyId, sesAad(user.id, "accessKeyId"))
+              ? encryptToken(
+                  normalized.accessKeyId,
+                  sesAad(org.organizationId, "accessKeyId")
+                )
               : null,
             secretAccessKey: normalized.secretAccessKey
               ? encryptToken(
                   normalized.secretAccessKey,
-                  sesAad(user.id, "secretAccessKey")
+                  sesAad(org.organizationId, "secretAccessKey")
                 )
               : null,
             sessionToken: normalized.sessionToken
-              ? encryptToken(normalized.sessionToken, sesAad(user.id, "sessionToken"))
+              ? encryptToken(
+                  normalized.sessionToken,
+                  sesAad(org.organizationId, "sessionToken")
+                )
               : null,
             sourceEmail: normalized.sourceEmail,
+            openTrackingEnabled: normalized.openTrackingEnabled,
+            clickTrackingEnabled: normalized.clickTrackingEnabled,
             updatedAt: nowSql
           }
         });
@@ -381,8 +553,9 @@ export async function saveUserSesConfigAction(
   revalidatePath("/app");
   revalidatePath("/app/templates");
   revalidatePath("/app/send");
+  revalidatePath("/app/organization");
   revalidatePath("/app/settings");
-  return { success: true, warning: cloudWatchWarning };
+  return { success: true, warning: null };
 }
 
 export async function sendSesTestEmailAction(
@@ -392,6 +565,7 @@ export async function sendSesTestEmailAction(
   if (!user) {
     return { success: false, error: "Unauthorized" };
   }
+  const org = await getRequiredUserOrg(user.id);
 
   const parsed = sesSettingsSchema.safeParse(input);
   if (!parsed.success) {
@@ -458,9 +632,31 @@ export async function sendSesTestEmailAction(
               Charset: "UTF-8"
             }
           }
-        }
+        },
+        ConfigurationSetName: getUserConfigurationSetName(org.organizationId),
+        Tags: [
+          { Name: "stp_user_id", Value: user.id },
+          { Name: "stp_org_id", Value: org.organizationId },
+          {
+            Name: "stp_template",
+            Value: sanitizeSesTagValue("SES Test Email", "SES_Test_Email")
+          }
+        ]
       })
     );
+
+    await db.insert(sentEmails).values({
+      organizationId: org.organizationId,
+      userId: user.id,
+      recipient: recipientEmail,
+      templateUsed: "SES Test Email",
+      status: "SENT",
+      messageId: response.MessageId ?? null,
+      error: null,
+      timestamp: new Date()
+    });
+    revalidatePath("/app/logs");
+    revalidatePath("/app");
 
     return {
       success: true,
@@ -468,6 +664,19 @@ export async function sendSesTestEmailAction(
       recipient: recipientEmail
     };
   } catch (error) {
+    await db.insert(sentEmails).values({
+      organizationId: org.organizationId,
+      userId: user.id,
+      recipient: user.email.trim() || "unknown@recipient",
+      templateUsed: "SES Test Email",
+      status: "FAILED",
+      messageId: null,
+      error: getFriendlyAwsError("Failed to send test email", error),
+      timestamp: new Date()
+    });
+    revalidatePath("/app/logs");
+    revalidatePath("/app");
+
     return {
       success: false,
       error: getFriendlyAwsError("Failed to send test email", error)
