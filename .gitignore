@@ -11,3 +11,5 @@ dist
 .env.production
 .env.production.local
 drizzle/meta
+*.tsbuildinfo
+next-env.d.ts
