@@ -20,10 +20,12 @@
   "dependencies": {
     "@aws-sdk/client-cloudwatch": "^3.1000.0",
     "@aws-sdk/client-ses": "^3.1000.0",
+    "@aws-sdk/client-sns": "^3.1003.0",
     "@heroui/react": "^2.8.9",
     "@hookform/resolvers": "^5.2.2",
     "@maily-to/core": "^0.3.7",
     "@maily-to/render": "^0.2.3",
+    "@polar-sh/sdk": "^0.46.3",
     "@tailwindcss/postcss": "^4.2.1",
     "@tiptap/core": "^3.20.0",
     "class-variance-authority": "^0.7.1",
