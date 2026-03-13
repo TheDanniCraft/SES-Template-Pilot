@@ -1,10 +1,8 @@
 import { eq } from "drizzle-orm";
 import { db } from "@/lib/db";
-import { NO_ACTIVATION_ID } from "@/lib/license-constants";
-import { createPolarClient } from "@/lib/polar-client";
+import { validateLicenseOnServer } from "@/lib/license-server";
 import { nowSql, organizationLicenses } from "@/lib/schema";
 import { getUserOrg } from "@/lib/org";
-import { getPolarOrganizationId } from "@/lib/polar-config";
 import { decryptToken } from "@/lib/token-crypto";
 
 export type UserLicenseState = {
@@ -55,34 +53,15 @@ function isDefinitiveInvalidError(payloadText: string) {
 
 async function revalidateOrgLicense(row: {
   organizationId: string;
-  activationId: string;
   licenseKeyEncrypted: string;
 }) {
-  const organizationId = getPolarOrganizationId();
-  if (!organizationId) {
-    return;
-  }
-
   const key = decryptToken(
     row.licenseKeyEncrypted,
     `org-license:${row.organizationId}`
   );
-  const polar = createPolarClient();
-  try {
-    const validateInput: {
-      key: string;
-      organizationId: string;
-      activationId?: string;
-    } = {
-      key,
-      organizationId
-    };
-    if (row.activationId && row.activationId !== NO_ACTIVATION_ID) {
-      validateInput.activationId = row.activationId;
-    }
-
-    const validated = await polar.customerPortal.licenseKeys.validate(validateInput);
-    const status = (validated.status ?? "").trim().toLowerCase();
+  const validatedResult = await validateLicenseOnServer({ key });
+  if (validatedResult.success) {
+    const status = (validatedResult.data.status ?? "").trim().toLowerCase();
     if (status === "granted" || status === "active") {
       await db
         .update(organizationLicenses)
@@ -94,19 +73,15 @@ async function revalidateOrgLicense(row: {
         .where(eq(organizationLicenses.organizationId, row.organizationId));
       return;
     }
-  } catch (error) {
-    const payloadText =
-      error instanceof Error ? error.message : String(error ?? "");
-    if (isDefinitiveInvalidError(payloadText)) {
-      await db
-        .update(organizationLicenses)
-        .set({
-          status: "revoked",
-          lastValidatedAt: nowSql,
-          updatedAt: nowSql
-        })
-        .where(eq(organizationLicenses.organizationId, row.organizationId));
-    }
+  } else if (isDefinitiveInvalidError(validatedResult.error)) {
+    await db
+      .update(organizationLicenses)
+      .set({
+        status: "revoked",
+        lastValidatedAt: nowSql,
+        updatedAt: nowSql
+      })
+      .where(eq(organizationLicenses.organizationId, row.organizationId));
     return;
   }
 
@@ -134,7 +109,6 @@ export async function getUserLicenseState(userId: string): Promise<UserLicenseSt
     .select({
       organizationId: organizationLicenses.organizationId,
       status: organizationLicenses.status,
-      activationId: organizationLicenses.activationId,
       licenseKeyEncrypted: organizationLicenses.licenseKeyEncrypted,
       lastValidatedAt: organizationLicenses.lastValidatedAt
     })
@@ -157,7 +131,6 @@ export async function getUserLicenseState(userId: string): Promise<UserLicenseSt
     try {
       await revalidateOrgLicense({
         organizationId: row.organizationId,
-        activationId: row.activationId,
         licenseKeyEncrypted: row.licenseKeyEncrypted
       });
     } catch {

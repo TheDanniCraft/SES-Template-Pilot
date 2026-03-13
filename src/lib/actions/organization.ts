@@ -6,9 +6,8 @@ import { revalidatePath } from "next/cache";
 import { z } from "zod";
 import { db } from "@/lib/db";
 import { NO_ACTIVATION_ID } from "@/lib/license-constants";
+import { deactivateLicenseOnServer } from "@/lib/license-server";
 import { getRequiredUserOrg, isInitialOwner, isOrgOwner } from "@/lib/org";
-import { createPolarClient } from "@/lib/polar-client";
-import { getPolarOrganizationId } from "@/lib/polar-config";
 import { getServerSessionUser } from "@/lib/server-auth";
 import {
   nowSql,
@@ -222,26 +221,16 @@ export async function deactivateOrganizationLicenseAction() {
   }
 
   if (license.activationId !== NO_ACTIVATION_ID) {
-    const organizationId = getPolarOrganizationId();
-    if (!organizationId) {
-      return { success: false, error: "Missing Polar configuration (POLAR_ORGANIZATION_ID)." };
-    }
-
-    try {
-      const polar = createPolarClient();
-      const key = decryptToken(
-        license.licenseKeyEncrypted,
-        `org-license:${org.organizationId}`
-      );
-      await polar.customerPortal.licenseKeys.deactivate({
-        key,
-        organizationId,
-        activationId: license.activationId
-      });
-    } catch (error) {
-      const detail =
-        error instanceof Error ? error.message : "Failed to deactivate license on Polar.";
-      return { success: false, error: detail };
+    const key = decryptToken(
+      license.licenseKeyEncrypted,
+      `org-license:${org.organizationId}`
+    );
+    const deactivationResult = await deactivateLicenseOnServer({
+      key,
+      activationId: license.activationId
+    });
+    if (!deactivationResult.success) {
+      return { success: false, error: deactivationResult.error };
     }
   }
 
