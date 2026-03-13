@@ -114,4 +114,8 @@ jobs:
             ${{ runner.os }}-nextjs-
 
       - name: Run build
+        env:
+          POLAR_VALIDATE_INTERVAL_SECONDS: ${{ vars.POLAR_VALIDATE_INTERVAL_SECONDS }}
+          NEXT_PUBLIC_POLAR_CHECKOUT_URL: ${{ vars.NEXT_PUBLIC_POLAR_CHECKOUT_URL }}
+          LICENSE_SERVER_URL: ${{ vars.LICENSE_SERVER_URL }}
         run: bun run build

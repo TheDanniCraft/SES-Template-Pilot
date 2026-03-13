@@ -53,6 +53,10 @@ jobs:
           platforms: ${{ matrix.platform }}
           push: true
           labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            POLAR_VALIDATE_INTERVAL_SECONDS=${{ vars.POLAR_VALIDATE_INTERVAL_SECONDS }}
+            NEXT_PUBLIC_POLAR_CHECKOUT_URL=${{ vars.NEXT_PUBLIC_POLAR_CHECKOUT_URL }}
+            LICENSE_SERVER_URL=${{ vars.LICENSE_SERVER_URL }}
           outputs: type=image,name=ghcr.io/${{ env.REPO_NAME }},push-by-digest=true,name-canonical=true,push=true
           cache-from: type=gha,scope=ses-template-pilot-build-${{ matrix.platform }}
           cache-to: type=gha,mode=max,scope=ses-template-pilot-build-${{ matrix.platform }}
