@@ -32,4 +32,4 @@ COPY --from=builder /app/.next/static ./.next/static
 COPY --from=builder /app/drizzle.config.ts ./drizzle.config.ts
 COPY --from=builder /app/drizzle ./drizzle
 EXPOSE 3000
-CMD ["node", "server.js"]
+CMD ["sh", "-c", "bun run db:migrate && exec node server.js"]

@@ -1,5 +1,8 @@
-import "dotenv/config";
 import { defineConfig } from "drizzle-kit";
+
+if (!process.env.DATABASE_URL) {
+  require("dotenv/config");
+}
 
 export default defineConfig({
   dialect: "postgresql",

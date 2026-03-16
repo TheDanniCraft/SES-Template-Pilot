@@ -1,4 +1,6 @@
 import type { NextConfig } from "next";
+import path from "path";
+import { nodeFileTrace } from "@vercel/nft";
 
 function isValidBase64Aes256Key(value: string) {
 	const normalized = value.trim();
@@ -29,10 +31,27 @@ function validateStartupEnv() {
 
 validateStartupEnv();
 
-const nextConfig: NextConfig = {
-	output: "standalone",
-	reactStrictMode: true,
-	poweredByHeader: false,
-};
+const drizzleTrace = nodeFileTrace([
+	require.resolve("drizzle-kit"),
+	require.resolve("drizzle-orm"),
+	path.resolve(path.dirname(require.resolve("drizzle-kit")), "bin.cjs"),
+]).then((trace) => [
+	...trace.fileList,
+	"./node_modules/.bin/drizzle-kit",
+	"./node_modules/drizzle-orm/**",
+	"./node_modules/drizzle-kit/**",
+]);
 
-export default nextConfig;
+const nextConfigPromise = drizzleTrace.then(
+	(drizzleFiles) =>
+		({
+			output: "standalone",
+			outputFileTracingIncludes: {
+				"**": drizzleFiles,
+			},
+			reactStrictMode: true,
+			poweredByHeader: false,
+		}) satisfies NextConfig,
+);
+
+export default nextConfigPromise;
