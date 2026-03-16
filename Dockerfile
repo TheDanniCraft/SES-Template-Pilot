@@ -27,10 +27,9 @@ ARG LICENSE_SERVER_URL=
 ENV POLAR_VALIDATE_INTERVAL_SECONDS=$POLAR_VALIDATE_INTERVAL_SECONDS
 ENV NEXT_PUBLIC_POLAR_CHECKOUT_URL=$NEXT_PUBLIC_POLAR_CHECKOUT_URL
 ENV LICENSE_SERVER_URL=$LICENSE_SERVER_URL
-COPY --from=builder /app/.next ./.next
-# COPY --from=builder /app/public ./public
-COPY --from=builder /app/package.json ./package.json
-COPY --from=builder /app/bun.lock ./bun.lock
-COPY --from=builder /app/node_modules ./node_modules
+COPY --from=builder /app/.next/standalone ./
+COPY --from=builder /app/.next/static ./.next/static
+COPY --from=builder /app/drizzle.config.ts ./drizzle.config.ts
+COPY --from=builder /app/drizzle ./drizzle
 EXPOSE 3000
-CMD ["bun", "run", "start"]
+CMD ["node", "server.js"]
