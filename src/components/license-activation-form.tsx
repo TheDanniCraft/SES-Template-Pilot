@@ -1,20 +1,22 @@
 "use client";
 
+import Link from "next/link";
 import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { Button, Card, CardBody, CardHeader, Input } from "@heroui/react";
-import { ExternalLink, KeyRound, LogOut, ShieldCheck } from "lucide-react";
+import { ExternalLink, KeyRound, ShieldCheck } from "lucide-react";
 import { toast } from "sonner";
 import { activatePolarLicenseAction } from "@/lib/actions/license";
-import { logoutAction } from "@/lib/actions/auth";
 
 type LicenseActivationFormProps = {
   email: string;
+  organizationName: string;
   purchaseUrl?: string;
 };
 
 export function LicenseActivationForm({
   email,
+  organizationName,
   purchaseUrl = ""
 }: LicenseActivationFormProps) {
   const router = useRouter();
@@ -34,31 +36,32 @@ export function LicenseActivationForm({
     });
   };
 
-  const onLogout = () => {
-    startTransition(async () => {
-      await logoutAction();
-      router.replace("/login");
-      router.refresh();
-    });
-  };
-
   return (
     <Card className="panel w-full max-w-md border border-cyan-400/30">
       <CardHeader>
         <div>
-          <p className="text-xs uppercase tracking-[0.2em] text-cyan-300/90">Activation</p>
+          <p className="text-xs uppercase tracking-[0.2em] text-cyan-300/90">
+            Organization License
+          </p>
           <h1 className="mt-1 flex items-center gap-2 text-xl font-semibold">
             <ShieldCheck className="h-5 w-5 text-cyan-300" />
-            Activate Your Account
+            Add Commercial License
           </h1>
-          <p className="mt-1 text-xs text-slate-300">
+          <p className="mt-2 text-xs text-slate-300">
             Signed in as <span className="font-medium">{email}</span>
+          </p>
+          <p className="mt-1 text-xs text-slate-300">
+            Organization: <span className="font-medium">{organizationName}</span>
+          </p>
+          <p className="mt-3 text-xs text-slate-400">
+            This applies to <span className="font-medium text-slate-200">{organizationName}</span>.
+            Free open source usage already works without a license.
           </p>
         </div>
       </CardHeader>
       <CardBody className="space-y-4">
         <Input
-          label="Polar License Key"
+          label="Commercial License Key"
           placeholder="2E0E3FF7-D410-4863-96DE-EA312C44DAA0"
           value={licenseKey}
           onValueChange={setLicenseKey}
@@ -70,7 +73,7 @@ export function LicenseActivationForm({
           isLoading={isPending}
           onPress={onActivate}
         >
-          Activate
+          Add License
         </Button>
         {purchaseUrl ? (
           <Button
@@ -82,16 +85,11 @@ export function LicenseActivationForm({
             target="_blank"
             variant="flat"
           >
-            Purchase License
+            Get Commercial License
           </Button>
         ) : null}
-        <Button
-          isLoading={isPending}
-          startContent={<LogOut className="h-4 w-4" />}
-          variant="flat"
-          onPress={onLogout}
-        >
-          Logout
+        <Button as={Link} href="/app" variant="flat">
+          Back to App
         </Button>
       </CardBody>
     </Card>
